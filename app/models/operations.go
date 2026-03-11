@@ -11,7 +11,7 @@ type VaccineSchedule struct {
 	IsCompleted   bool      `gorm:"type:tinyint(1);default:0" json:"is_completed"`
 	IsActive      bool      `gorm:"type:tinyint(1);default:1" json:"is_active"`
 	CreatedByID   *uint     `json:"created_by_id"`
-	CreatedAt     time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	CreatedAt     time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 }
 
 func (VaccineSchedule) TableName() string { return "vaccine_schedule" }

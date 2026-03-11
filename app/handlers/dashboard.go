@@ -56,7 +56,7 @@ type FlockTile struct {
 }
 
 type RecentOrderItem struct {
-	InvoiceNumber        string  `json:"invoice_number"`
+	SalesOrderNumber     string  `json:"sales_order_number"`
 	CustomerNameSnapshot string  `json:"customer_name_snapshot"`
 	GrandTotal           float64 `json:"grand_total"`
 	PaymentStatus        string  `json:"payment_status"`
@@ -205,18 +205,18 @@ func GetDashboard() Response {
 
 	// Recent sales orders (last 5)
 	type OrderRow struct {
-		InvoiceNumber        string
+		SalesOrderNumber     string
 		CustomerNameSnapshot string
 		GrandTotal           float64
 		PaymentStatus        string
 		Date                 time.Time
 	}
 	var orders []OrderRow
-	db.DB.Raw(`SELECT invoice_number, customer_name_snapshot, grand_total, payment_status, date
+	db.DB.Raw(`SELECT sales_order_number, customer_name_snapshot, grand_total, payment_status, date
 		FROM sales_order ORDER BY id DESC LIMIT 5`).Scan(&orders)
 	for _, o := range orders {
 		data.RecentOrders = append(data.RecentOrders, RecentOrderItem{
-			InvoiceNumber:        o.InvoiceNumber,
+			SalesOrderNumber:     o.SalesOrderNumber,
 			CustomerNameSnapshot: o.CustomerNameSnapshot,
 			GrandTotal:           o.GrandTotal,
 			PaymentStatus:        o.PaymentStatus,

@@ -14,59 +14,141 @@ import (
 
 // BackupFile represents a single backup file.
 type BackupFile struct {
-	Name      string    `json:"name"`
-	Path      string    `json:"path"`
-	Size      int64     `json:"size"`
-	CreatedAt time.Time `json:"created_at"`
+	FileName      string    `json:"file_name"`
+	Path          string    `json:"path"`
+	FileSizeBytes int64     `json:"file_size_bytes"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
-// GetBackupDir returns the backups directory next to the executable.
+// GetBackupDir returns a stable backups directory under the user's home folder.
+// Using the home directory avoids the temp-path problem in Wails dev mode.
 func GetBackupDir() string {
-	exe, _ := os.Executable()
-	dir := filepath.Join(filepath.Dir(exe), "backups")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback: next to executable
+		exe, _ := os.Executable()
+		home = filepath.Dir(exe)
+	}
+	dir := filepath.Join(home, "EggLayerERP", "backups")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		_ = os.MkdirAll(dir, 0755)
 	}
 	return dir
 }
 
-// CreateBackup runs mysqldump and saves the output to the backups directory.
-// Returns the path of the created backup file.
-func CreateBackup(cfg *config.Config) (string, error) {
-	// Parse DSN to extract host, port, user, password, dbname
-	// DSN format: user:pass@tcp(host:port)/dbname?...
+// SuggestedFilename returns a timestamped backup filename.
+func SuggestedFilename() string {
+	return fmt.Sprintf("egglayererp_backup_%s.sql", time.Now().Format("20060102_150405"))
+}
+
+// CreateBackup runs mysqldump to the default backups directory.
+func CreateBackup(cfg *config.Config) (BackupFile, error) {
+	return CreateBackupToPath(cfg, filepath.Join(GetBackupDir(), SuggestedFilename()))
+}
+
+// findMysqldump locates the mysqldump executable.
+// It checks PATH first, then falls back to known Windows MySQL installation directories.
+func findMysqldump() (string, error) {
+	// 1. Try PATH first
+	if path, err := exec.LookPath("mysqldump"); err == nil {
+		return path, nil
+	}
+
+	// 2. Check common Windows MySQL installation paths
+	candidates := []string{
+		`C:\Program Files\MySQL\MySQL Server 9.6\bin\mysqldump.exe`,
+		`C:\Program Files\MySQL\MySQL Server 9.0\bin\mysqldump.exe`,
+		`C:\Program Files\MySQL\MySQL Server 8.4\bin\mysqldump.exe`,
+		`C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe`,
+		`C:\Program Files (x86)\MySQL\MySQL Server 8.0\bin\mysqldump.exe`,
+		`C:\xampp\mysql\bin\mysqldump.exe`,
+		`C:\wamp64\bin\mysql\mysql8.0\bin\mysqldump.exe`,
+	}
+
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"mysqldump not found. Add MySQL's bin folder to your system PATH, " +
+			"or install MySQL Server. Checked: PATH and common installation directories",
+	)
+}
+
+// CreateBackupToPath runs mysqldump and writes the dump to destPath.
+// If destPath is inside the managed backups directory, rotation is applied.
+func CreateBackupToPath(cfg *config.Config, destPath string) (BackupFile, error) {
 	dsn := cfg.Database.DSN
 	user, pass, host, port, dbname, err := parseDSN(dsn)
 	if err != nil {
-		return "", fmt.Errorf("cannot parse DSN for backup: %w", err)
+		return BackupFile{}, fmt.Errorf("cannot parse DSN for backup: %w", err)
 	}
 
-	timestamp := time.Now().Format("20060102_150405")
-	filename := fmt.Sprintf("egglayererp_backup_%s.sql", timestamp)
-	backupPath := filepath.Join(GetBackupDir(), filename)
+	// Locate mysqldump binary
+	mysqldumpPath, err := findMysqldump()
+	if err != nil {
+		return BackupFile{}, err
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return BackupFile{}, fmt.Errorf("cannot create destination directory: %w", err)
+	}
 
 	args := []string{
 		fmt.Sprintf("--host=%s", host),
 		fmt.Sprintf("--port=%s", port),
 		fmt.Sprintf("--user=%s", user),
 		fmt.Sprintf("--password=%s", pass),
-		"--single-transaction",
+		// --single-transaction requires RELOAD/FLUSH_TABLES privilege (MySQL 8.0.32+).
+		// --skip-lock-tables works for InnoDB (MVCC-based) without elevated privileges.
+		"--skip-lock-tables",
+		"--no-tablespaces",      // avoids PROCESS privilege error
+		"--set-gtid-purged=OFF", // suppresses GTID consistency warning
 		"--routines",
 		"--triggers",
-		"--result-file=" + backupPath,
+		"--result-file=" + destPath,
 		dbname,
 	}
 
-	cmd := exec.Command("mysqldump", args...)
+	cmd := exec.Command(mysqldumpPath, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("mysqldump failed: %s\n%s", err.Error(), string(output))
+		return BackupFile{}, fmt.Errorf("mysqldump failed: %s\n%s", err.Error(), string(output))
 	}
 
-	// Rotate: keep only last 10 backups
-	_ = rotateBackups(GetBackupDir(), 10)
+	// Rotate managed backups only when saving inside the backups directory
+	backupDir, _ := filepath.Abs(GetBackupDir())
+	destAbs, _ := filepath.Abs(destPath)
+	if strings.HasPrefix(destAbs, backupDir) {
+		_ = rotateBackups(GetBackupDir(), 10)
+	}
 
-	return backupPath, nil
+	info, _ := os.Stat(destPath)
+	var size int64
+	if info != nil {
+		size = info.Size()
+	}
+	return BackupFile{
+		FileName:      filepath.Base(destPath),
+		Path:          destPath,
+		FileSizeBytes: size,
+		CreatedAt:     time.Now(),
+	}, nil
+}
+
+// GetBackupPath returns the full path for a named backup file, validated for safety.
+func GetBackupPath(name string) (string, error) {
+	if !strings.HasSuffix(name, ".sql") || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("invalid backup filename")
+	}
+	path := filepath.Join(GetBackupDir(), name)
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("backup file not found")
+	}
+	return path, nil
 }
 
 // ListBackups returns all backup files sorted by creation time (newest first).
@@ -84,10 +166,10 @@ func ListBackups() ([]BackupFile, error) {
 		}
 		info, _ := e.Info()
 		files = append(files, BackupFile{
-			Name:      e.Name(),
-			Path:      filepath.Join(dir, e.Name()),
-			Size:      info.Size(),
-			CreatedAt: info.ModTime(),
+			FileName:      e.Name(),
+			Path:          filepath.Join(dir, e.Name()),
+			FileSizeBytes: info.Size(),
+			CreatedAt:     info.ModTime(),
 		})
 	}
 	sort.Slice(files, func(i, j int) bool {

@@ -7,6 +7,8 @@ import {operations} from '../models';
 
 export function AddBodyWeightLog(arg1:number,arg2:string,arg3:number,arg4:number,arg5:number,arg6:string):Promise<handlers.Response>;
 
+export function BackupDiagnostics():Promise<handlers.Response>;
+
 export function CancelAPInvoice(arg1:number):Promise<handlers.Response>;
 
 export function CancelARInvoice(arg1:number):Promise<handlers.Response>;
@@ -75,6 +77,8 @@ export function DeleteSupplier(arg1:number):Promise<handlers.Response>;
 
 export function DeleteUser(arg1:number):Promise<handlers.Response>;
 
+export function DownloadBackup(arg1:string):Promise<handlers.Response>;
+
 export function GetAPInvoice(arg1:number):Promise<handlers.Response>;
 
 export function GetAPPayment(arg1:number):Promise<handlers.Response>;
@@ -86,6 +90,10 @@ export function GetARInvoice(arg1:number):Promise<handlers.Response>;
 export function GetAnalytics(arg1:string,arg2:string):Promise<handlers.Response>;
 
 export function GetAuditLogs(arg1:number):Promise<handlers.Response>;
+
+export function GetBackupDir():Promise<handlers.Response>;
+
+export function GetBackupHistory():Promise<handlers.Response>;
 
 export function GetBalanceSheet(arg1:string):Promise<handlers.Response>;
 
@@ -148,8 +156,6 @@ export function ListAPPayments():Promise<handlers.Response>;
 export function ListARInvoices(arg1:any,arg2:string):Promise<handlers.Response>;
 
 export function ListAccountDeterminations():Promise<handlers.Response>;
-
-export function ListBackups():Promise<handlers.Response>;
 
 export function ListCollections():Promise<handlers.Response>;
 

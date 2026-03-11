@@ -347,45 +347,95 @@ async function loadFarmSettings(tabBar) {
 // ── Audit Log ─────────────────────────────────────────────────────────────────
 
 async function loadAuditLogView(tabBar) {
-  const logs = await api.GetAuditLog();
+  const logs = await api.GetAuditLogs(500);
   if (!logs) {
     showView(wrapAdmin(tabBar, `<div class="alert alert-warning">Failed to load audit log.</div>`));
     return;
   }
 
-  const rows = logs.length === 0
-    ? `<tr><td colspan="6" class="text-center text-muted py-4">No audit entries found.</td></tr>`
-    : logs.map(l => `
+  const renderTable = (data) => {
+    if (data.length === 0)
+      return `<tr><td colspan="6" class="text-center text-muted py-4">No audit entries found.</td></tr>`;
+    return data.map(l => {
+      const ts = l.timestamp ? new Date(l.timestamp) : null;
+      const dateStr = ts ? ts.toLocaleDateString('en-CA') : '—';
+      const timeStr = ts ? ts.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+      return `
         <tr>
-          <td class="text-nowrap small text-muted">${formatDate(l.timestamp)} ${l.time_str || ''}</td>
-          <td>${l.username || '—'}</td>
-          <td><span class="badge bg-${auditActionColor(l.action)}">${l.action || '—'}</span></td>
-          <td>${l.module || '—'}</td>
-          <td>${l.entity_ref || '—'}</td>
-          <td class="small text-muted">${l.description || '—'}</td>
-        </tr>
-      `).join('');
+          <td class="text-nowrap small text-muted">${dateStr} <span class="text-secondary">${timeStr}</span></td>
+          <td>${_esc(l.username || '—')}</td>
+          <td><span class="badge bg-${auditActionColor(l.action)}">${_esc(l.action || '—')}</span></td>
+          <td class="small">${_esc(l.module || '—')}</td>
+          <td class="small">${_esc(l.entity_ref || '—')}</td>
+          <td class="small text-muted">${_esc(l.description || '—')}</td>
+        </tr>`;
+    }).join('');
+  };
+
+  // unique values for filter dropdowns
+  const users   = [...new Set(logs.map(l => l.username).filter(Boolean))].sort();
+  const actions = [...new Set(logs.map(l => l.action).filter(Boolean))].sort();
+  const modules = [...new Set(logs.map(l => l.module).filter(Boolean))].sort();
 
   showView(wrapAdmin(tabBar, `
     <div class="card border-0 shadow-sm">
-      <div class="card-header bg-transparent fw-semibold">
-        Audit Log <span class="text-muted fw-normal small ms-2">(${logs.length} entries)</span>
+      <div class="card-header bg-transparent">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <span class="fw-semibold me-auto">Audit Log</span>
+          <input id="al-search" type="search" class="form-control form-control-sm" style="width:180px" placeholder="Search description…">
+          <select id="al-user" class="form-select form-select-sm" style="width:130px">
+            <option value="">All Users</option>
+            ${users.map(u => `<option>${_esc(u)}</option>`).join('')}
+          </select>
+          <select id="al-action" class="form-select form-select-sm" style="width:120px">
+            <option value="">All Actions</option>
+            ${actions.map(a => `<option>${_esc(a)}</option>`).join('')}
+          </select>
+          <select id="al-module" class="form-select form-select-sm" style="width:130px">
+            <option value="">All Modules</option>
+            ${modules.map(m => `<option>${_esc(m)}</option>`).join('')}
+          </select>
+          <span id="al-count" class="text-muted small">${logs.length} entries</span>
+          <button class="btn btn-outline-secondary btn-sm" onclick="navigate('#/admin/audit')">
+            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+          </button>
+        </div>
       </div>
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle mb-0">
           <thead class="table-light">
             <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Module</th><th>Entity</th><th>Description</th></tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody id="al-tbody">${renderTable(logs)}</tbody>
         </table>
       </div>
     </div>
   `));
+
+  // live filtering
+  const filter = () => {
+    const q      = document.getElementById('al-search').value.toLowerCase();
+    const user   = document.getElementById('al-user').value;
+    const action = document.getElementById('al-action').value;
+    const mod    = document.getElementById('al-module').value;
+    const filtered = logs.filter(l =>
+      (!q      || (l.description || '').toLowerCase().includes(q) || (l.entity_ref || '').toLowerCase().includes(q)) &&
+      (!user   || l.username === user) &&
+      (!action || l.action   === action) &&
+      (!mod    || l.module   === mod)
+    );
+    document.getElementById('al-tbody').innerHTML = renderTable(filtered);
+    document.getElementById('al-count').textContent = `${filtered.length} / ${logs.length} entries`;
+  };
+  ['al-search','al-user','al-action','al-module'].forEach(id =>
+    document.getElementById(id).addEventListener('input', filter)
+  );
 }
 
 function auditActionColor(action) {
   const map = {
     CREATE: 'success', UPDATE: 'primary', DELETE: 'danger',
+    VOID: 'danger', CANCEL: 'warning', CONFIRM: 'info',
     LOGIN: 'info', LOGOUT: 'secondary', ERROR: 'warning'
   };
   return map[(action || '').toUpperCase()] || 'secondary';

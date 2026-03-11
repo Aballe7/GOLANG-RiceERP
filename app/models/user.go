@@ -12,7 +12,7 @@ type User struct {
 	Role         string     `gorm:"type:varchar(20);default:'Staff'" json:"role"` // Admin | Staff
 	PasswordHash string     `gorm:"type:varchar(256);not null" json:"-"`
 	IsActive     bool       `gorm:"type:tinyint(1);default:1" json:"is_active"`
-	CreatedAt    time.Time  `json:"created_at"`
+	CreatedAt    time.Time  `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	LastLogin    *time.Time `json:"last_login"`
 	Permissions  *string    `gorm:"type:text" json:"permissions"` // JSON array of module names
 }

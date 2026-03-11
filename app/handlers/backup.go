@@ -21,11 +21,11 @@ func CreateBackup() Response {
 	if appCfg == nil {
 		return errMsg("App configuration not loaded")
 	}
-	path, err := backup.CreateBackup(appCfg)
+	bf, err := backup.CreateBackup(appCfg)
 	if err != nil {
 		return errResponse(err)
 	}
-	return okResponse("Backup created successfully", path)
+	return okResponse("Backup created successfully", bf)
 }
 
 // ListBackups returns all available backup files.

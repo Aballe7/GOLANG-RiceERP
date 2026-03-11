@@ -3,21 +3,41 @@
 Modules.Backup = {
   async load() {
     showLoading();
-    const history = await api.GetBackupHistory();
-    if (!history) {
-      showView(`<div class="alert alert-warning m-4">Failed to load backup history.</div>`);
+
+    // Get backup folder information (used in the UI note)
+    let backupDir = '~/EggLayerERP/backups';
+    try {
+      const dirResp = await window.go.app.App.GetBackupDir();
+      if (dirResp && dirResp.ok && dirResp.data) {
+        backupDir = dirResp.data;
+      }
+    } catch (e) {
+      // ignore; we'll display the default path
+    }
+
+    // Use the raw binding so we can display error messages from the backend.
+    const resp = await window.go.app.App.GetBackupHistory();
+    if (!resp || !resp.ok) {
+      const msg = resp?.message || 'Failed to load backup history.';
+      showView(`<div class="alert alert-warning m-4">${_esc(msg)}</div>`);
       return;
     }
 
+    const history = resp.data || [];
+
     const rows = history.length === 0
       ? `<tr><td colspan="4" class="text-center text-muted py-5">No backups found. Create your first backup.</td></tr>`
-      : history.map(b => `
+      : history.map(b => {
+          const ts = b.created_at ? new Date(b.created_at) : null;
+          const dateStr = ts ? ts.toLocaleDateString('en-CA') : '—';
+          const timeStr = ts ? ts.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+          return `
           <tr>
             <td class="fw-semibold">
-              <i class="bi bi-file-zip me-2 text-secondary"></i>${b.file_name || '—'}
+              <i class="bi bi-file-earmark-text me-2 text-secondary"></i>${_esc(b.file_name || '—')}
             </td>
             <td>${formatBackupSize(b.file_size_bytes)}</td>
-            <td>${formatDate(b.created_at)} ${b.time_str || ''}</td>
+            <td class="text-nowrap small">${dateStr} <span class="text-muted">${timeStr}</span></td>
             <td class="text-end">
               <button class="btn btn-sm btn-outline-secondary me-1"
                 title="Download" onclick="downloadBackup(${JSON.stringify(b.file_name)})">
@@ -29,18 +49,29 @@ Modules.Backup = {
               </button>
             </td>
           </tr>
-        `).join('');
+        `;}).join('');
 
     showView(`
       <div class="container-fluid p-4">
         <div class="d-flex align-items-center justify-content-between mb-4">
           <div>
             <h4 class="fw-bold mb-0"><i class="bi bi-cloud-upload me-2"></i>Backup</h4>
-            <p class="text-muted small mb-0 mt-1">Manage database backups.</p>
+            <p class="text-muted small mb-0 mt-1">Backups are saved to <code id="backupDirPath">${_esc(backupDir)}</code>. Use <i class="bi bi-download"></i> to export a copy elsewhere.</p>
           </div>
-          <button class="btn btn-primary" id="createBackupBtn" onclick="createBackup()">
-            <i class="bi bi-plus-circle me-2"></i>Create Backup
-          </button>
+          <div class="d-flex gap-2 flex-wrap align-items-start">
+            <div>
+              <button class="btn btn-primary" id="createBackupBtn" onclick="createBackup()">
+                <i class="bi bi-plus-circle me-2"></i>Create Backup
+              </button>
+              <button class="btn btn-outline-primary" id="createBackupSaveBtn" onclick="createBackupAndSave()">
+                <i class="bi bi-folder2-open me-2"></i>Backup & Save...
+              </button>
+              <div id="backupInlineError" class="text-danger small mt-2 p-2 bg-danger-subtle rounded" style="display:none;white-space:pre-wrap;max-width:600px;"></div>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm align-self-center" onclick="runBackupDiagnostics()" title="Run diagnostics and show detailed output">
+              <i class="bi bi-bug me-1"></i>Diagnostics
+            </button>
+          </div>
         </div>
 
         <!-- Storage Info -->
@@ -67,7 +98,7 @@ Modules.Backup = {
             <div class="card border-0 shadow-sm">
               <div class="card-body text-center">
                 <div class="fs-5 fw-bold text-secondary">
-                  ${history.length > 0 ? formatDate(history[0].created_at) : '—'}
+                  ${history.length > 0 ? new Date(history[0].created_at).toLocaleDateString('en-CA') : '—'}
                 </div>
                 <div class="text-muted small">Latest Backup</div>
               </div>
@@ -99,6 +130,24 @@ Modules.Backup = {
         </div>
       </div>
 
+      <!-- Error Detail Modal -->
+      <div class="modal fade" id="backupErrorModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content border-0 shadow">
+            <div class="modal-header border-0 bg-danger text-white">
+              <h6 class="modal-title"><i class="bi bi-exclamation-circle me-2"></i>Backup Error</h6>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <pre id="backupErrorText" class="bg-light rounded p-3 small text-danger mb-0" style="white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;"></pre>
+            </div>
+            <div class="modal-footer border-0">
+              <button class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Confirm Delete Modal -->
       <div class="modal fade" id="deleteBackupModal" tabindex="-1">
         <div class="modal-dialog modal-sm">
@@ -125,35 +174,165 @@ Modules.Backup = {
   }
 };
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+async function runBackupDiagnostics() {
+  const errDiv = document.getElementById('backupInlineError');
+  if (errDiv) {
+    errDiv.textContent = 'Running diagnostics…';
+    errDiv.style.display = 'block';
+  }
+  try {
+    const resp = await window.go.app.App.BackupDiagnostics();
+    const output = resp?.data || resp?.message || JSON.stringify(resp);
+    if (errDiv) {
+      errDiv.textContent = output;
+      errDiv.style.display = 'block';
+      errDiv.className = 'small mt-2 p-2 bg-light border rounded text-dark';
+    }
+  } catch (ex) {
+    if (errDiv) {
+      errDiv.textContent = 'Diagnostics threw: ' + (ex?.message || String(ex));
+      errDiv.style.display = 'block';
+    }
+  }
+}
+
+// ── Error display ─────────────────────────────────────────────────────────────
+
+function showBackupError(msg) {
+  const el = document.getElementById('backupErrorText');
+  if (el) el.textContent = msg;
+  const modal = document.getElementById('backupErrorModal');
+  if (modal) new bootstrap.Modal(modal).show();
+  else toast('Error: ' + msg.substring(0, 120), 'danger'); // fallback
+}
+
 // ── Create Backup ─────────────────────────────────────────────────────────────
 
 async function createBackup() {
   const btn = document.getElementById('createBackupBtn');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating…';
+  const errDiv = document.getElementById('backupInlineError');
+  if (errDiv) { errDiv.style.display = 'none'; errDiv.textContent = ''; }
 
-  const result = await api.CreateBackup();
-  if (result) {
-    toast(`Backup created: ${result.file_name || 'backup file'}`, 'success');
-    await Modules.Backup.load();
-  } else {
-    toast('Failed to create backup.', 'danger');
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-plus-circle me-2"></i>Create Backup';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating…';
+  }
+
+  const reset = () => {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-plus-circle me-2"></i>Create Backup';
+    }
+  };
+
+  let resp;
+  try {
+    resp = await window.go.app.App.CreateBackup();
+  } catch (ex) {
+    reset();
+    const msg = 'Wails binding threw an exception:\n' + (ex?.message || String(ex));
+    console.error('[backup] exception:', ex);
+    _showBackupInlineError(msg);
+    showBackupError(msg);
+    return;
+  }
+
+  if (!resp || !resp.ok) {
+    reset();
+    const msg = resp?.message || ('Unexpected null response — resp: ' + JSON.stringify(resp));
+    console.error('[backup] failed:', msg);
+    _showBackupInlineError(msg);
+    showBackupError(msg);
+    return;
+  }
+
+  reset();
+  const fname = resp.data?.file_name || 'done';
+  const fpath = resp.data?.path || '';
+  toast(`Backup saved: ${fname}${fpath ? ' → ' + fpath : ''}`, 'success');
+  await Modules.Backup.load();
+}
+
+// ── Create Backup + Save ─────────────────────────────────────────────────────
+
+async function createBackupAndSave() {
+  const btn = document.getElementById('createBackupSaveBtn');
+  const createBtn = document.getElementById('createBackupBtn');
+  const errDiv = document.getElementById('backupInlineError');
+  if (errDiv) { errDiv.style.display = 'none'; errDiv.textContent = ''; }
+
+  const setLoading = (loading) => {
+    if (btn) {
+      btn.disabled = loading;
+      btn.innerHTML = loading
+        ? '<span class="spinner-border spinner-border-sm me-2"></span>Backing up…'
+        : '<i class="bi bi-folder2-open me-2"></i>Backup & Save...';
+    }
+    if (createBtn) createBtn.disabled = loading;
+  };
+
+  setLoading(true);
+
+  let resp;
+  try {
+    resp = await window.go.app.App.CreateBackup();
+  } catch (ex) {
+    setLoading(false);
+    const msg = 'Wails binding threw an exception:\n' + (ex?.message || String(ex));
+    console.error('[backup] exception:', ex);
+    _showBackupInlineError(msg);
+    showBackupError(msg);
+    return;
+  }
+
+  if (!resp || !resp.ok) {
+    setLoading(false);
+    const msg = resp?.message || ('Unexpected null response — resp: ' + JSON.stringify(resp));
+    console.error('[backup] failed:', msg);
+    _showBackupInlineError(msg);
+    showBackupError(msg);
+    return;
+  }
+
+  const fname = resp.data?.file_name;
+  if (!fname) {
+    setLoading(false);
+    showBackupError('Unexpected response: missing file name');
+    return;
+  }
+
+  // Open save dialog and copy file to chosen location.
+  toast('Opening save dialog…', 'info');
+  const saved = await api.DownloadBackup(fname);
+  setLoading(false);
+
+  if (!saved) {
+    toast('Save cancelled or failed.', 'warning');
+  }
+
+  await Modules.Backup.load();
+}
+
+function _showBackupInlineError(msg) {
+  const el = document.getElementById('backupInlineError');
+  if (el) {
+    el.textContent = msg;
+    el.style.display = 'block';
   }
 }
 
 // ── Download Backup ───────────────────────────────────────────────────────────
 
 async function downloadBackup(fileName) {
+  toast('Opening save dialog…', 'info');
   const result = await api.DownloadBackup(fileName);
   if (!result) {
-    toast('Failed to download backup.', 'danger');
+    toast('Save cancelled or failed.', 'warning');
     return;
   }
-  // result is expected to be a file path or blob trigger handled by Go
-  toast(`Downloading ${fileName}…`, 'info');
+  toast('Backup saved successfully.', 'success');
 }
 
 // ── Delete Backup ─────────────────────────────────────────────────────────────

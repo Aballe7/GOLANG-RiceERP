@@ -290,6 +290,11 @@ function renderDashboard(d) {
         <button class="btn btn-outline-dark btn-sm text-start" onclick="navigate('#/accounting')">
           <i class="bi bi-bank me-2"></i> Accounting
         </button>
+        ${currentUser && currentUser.role === 'Admin' ? `
+        <hr class="my-1">
+        <button class="btn btn-outline-secondary btn-sm text-start" id="dashBackupBtn" onclick="dashboardBackup()">
+          <i class="bi bi-cloud-upload me-2"></i> Backup Database
+        </button>` : ''}
       </div>
     </div>
   </div>`;
@@ -309,7 +314,7 @@ function renderDashboard(d) {
             <div class="d-flex justify-content-between align-items-start">
               <div>
                 <div class="fw-bold" style="font-size:12px;">${o.customer_name_snapshot || '—'}</div>
-                <div class="text-muted font-monospace" style="font-size:10px;">${o.invoice_number}</div>
+                <div class="text-muted font-monospace" style="font-size:10px;">${o.sales_order_number}</div>
               </div>
               <div class="text-end ms-2">
                 <div class="fw-bold text-success" style="font-size:12px;">${formatCurrency(o.grand_total)}</div>
@@ -515,4 +520,34 @@ function renderDashboard(d) {
     </div>
   </div>
 </div>`;
+}
+
+
+// ── Dashboard quick backup ─────────────────────────────────────────────────────
+
+async function dashboardBackup() {
+  const btn = document.getElementById('dashBackupBtn');
+  const reset = () => {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-upload me-2"></i> Backup Database';
+    }
+  };
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Backing up…';
+  }
+
+  const resp = await window.go.app.App.CreateBackup();
+  reset();
+
+  if (!resp || !resp.ok) {
+    const msg = (resp && resp.message) ? resp.message : 'Unknown error — resp: ' + JSON.stringify(resp);
+    console.error('[backup]', msg);
+    toast('Backup failed — navigate to Backup module for details', 'danger');
+    return;
+  }
+  const fname = resp.data?.file_name || 'done';
+  const fpath = resp.data?.path || '';
+  toast(`Backup saved: ${fname}${fpath ? ' → ' + fpath : ''}`, 'success');
 }

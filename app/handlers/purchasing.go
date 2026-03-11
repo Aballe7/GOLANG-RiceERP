@@ -4,6 +4,7 @@ import (
 	"egglayererp/app/middleware"
 	"egglayererp/app/models"
 	"egglayererp/app/services/purchasing"
+	audit "egglayererp/app/services/audit"
 )
 
 // All handler methods in this file require CanAccess("Purchasing").
@@ -145,6 +146,7 @@ func CreateDeliveryReceipt(req CreateDeliveryReceiptRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Purchasing", "DeliveryReceipt", dr.DRNumber, "Delivery receipt created", dr.ID)
 	return okResponse("Delivery receipt created", dr)
 }
 
@@ -178,6 +180,7 @@ func ConfirmDeliveryReceipt(id uint) Response {
 	if err := purchasing.ConfirmDeliveryReceipt(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Confirm("Purchasing", "DeliveryReceipt", "", "Delivery receipt confirmed", id)
 	return okResponse("Delivery receipt confirmed", nil)
 }
 
@@ -189,6 +192,7 @@ func CancelDeliveryReceipt(id uint) Response {
 	if err := purchasing.CancelDeliveryReceipt(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Cancel("Purchasing", "DeliveryReceipt", "", "Delivery receipt cancelled", id)
 	return okResponse("Delivery receipt cancelled", nil)
 }
 
@@ -221,6 +225,7 @@ func CreateAPInvoice(req CreateAPInvoiceRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Purchasing", "APInvoice", inv.InvoiceNumber, "AP invoice created for "+inv.SupplierName, inv.ID)
 	return okResponse("AP invoice created", inv)
 }
 
@@ -257,6 +262,7 @@ func CancelAPInvoice(id uint) Response {
 	if err := purchasing.CancelAPInvoice(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Cancel("Purchasing", "APInvoice", "", "AP invoice cancelled", id)
 	return okResponse("AP invoice cancelled", nil)
 }
 
@@ -287,6 +293,7 @@ func CreateAPPayment(req CreateAPPaymentRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Purchasing", "APPayment", payment.PaymentNumber, "AP payment created for "+payment.SupplierNameSnapshot, payment.ID)
 	return okResponse("AP payment created", payment)
 }
 

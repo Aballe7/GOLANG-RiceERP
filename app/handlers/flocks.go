@@ -3,6 +3,7 @@ package handlers
 import (
 	"egglayererp/app/middleware"
 	"egglayererp/app/services/flocks"
+	audit "egglayererp/app/services/audit"
 )
 
 // GetFlocks returns all flocks split into active and retired lists.
@@ -51,6 +52,7 @@ func CreateFlock(req flocks.CreateFlockRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Flocks", "Flock", f.Name, "Flock created in house "+f.HouseNumber, f.ID)
 	return okResponse("Flock created successfully", f)
 }
 
@@ -65,6 +67,7 @@ func UpdateFlock(req flocks.UpdateFlockRequest) Response {
 	if err := flocks.UpdateFlock(req); err != nil {
 		return errResponse(err)
 	}
+	audit.Update("Flocks", "Flock", "", "Flock details updated", req.ID)
 	return okResponse("Flock updated successfully", nil)
 }
 
@@ -79,6 +82,7 @@ func TransferFlock(req flocks.TransferFlockRequest) Response {
 	if err := flocks.TransferFlock(req); err != nil {
 		return errResponse(err)
 	}
+	audit.Update("Flocks", "Flock", "", "Flock transferred to house "+req.NewHouseNumber, req.ID)
 	return okResponse("Flock transferred to Layer house successfully", nil)
 }
 
@@ -94,6 +98,7 @@ func RetireFlock(req flocks.RetireFlockRequest) Response {
 	if err := flocks.RetireFlock(req); err != nil {
 		return errResponse(err)
 	}
+	audit.Delete("Flocks", "Flock", "", "Flock retired", req.ID)
 	return okResponse("Flock retired successfully", nil)
 }
 

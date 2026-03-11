@@ -12,7 +12,7 @@ type Customer struct {
 	CustomerType    string    `gorm:"type:varchar(20);default:'Walk-in'" json:"customer_type"` // Account | Walk-in
 	Notes           string    `gorm:"type:text" json:"notes"`
 	IsActive        bool      `gorm:"type:tinyint(1);default:1" json:"is_active"`
-	CreatedAt       time.Time `gorm:"type:date" json:"created_at"`
+	CreatedAt       time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID     *uint     `json:"created_by_id"`
 	PriceGroupID    *uint     `gorm:"index" json:"price_group_id"`
 
@@ -27,7 +27,7 @@ type PriceGroup struct {
 	Name        string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"`
 	Description string    `gorm:"type:varchar(200)" json:"description"`
 	IsActive    bool      `gorm:"type:tinyint(1);default:1" json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
+	CreatedAt   time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 
 	Items     []PriceGroupItem `gorm:"foreignKey:PriceGroupID;constraint:OnDelete:CASCADE" json:"items,omitempty"`
 	Customers []Customer       `gorm:"foreignKey:PriceGroupID" json:"-"`
@@ -73,7 +73,7 @@ type SalesOrder struct {
 	AmountInvoiced          float64   `gorm:"type:decimal(15,4);default:0" json:"amount_invoiced"`
 	AmountCollected         float64   `gorm:"type:decimal(15,4);default:0" json:"amount_collected"`
 	Notes                   string    `gorm:"type:text" json:"notes"`
-	CreatedAt               time.Time `gorm:"type:date" json:"created_at"`
+	CreatedAt               time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID             *uint     `json:"created_by_id"`
 
 	Customer   *Customer       `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -104,7 +104,7 @@ type DeliveryOrder struct {
 	Status         string    `gorm:"type:varchar(20);default:'Draft'" json:"status"` // Draft | Delivered | Cancelled
 	DeliveredBy    string    `gorm:"type:varchar(100)" json:"delivered_by"`
 	Notes          string    `gorm:"type:text" json:"notes"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID    *uint     `json:"created_by_id"`
 	AmountInvoiced float64   `gorm:"type:decimal(15,4);default:0" json:"amount_invoiced"`
 
@@ -155,7 +155,7 @@ type ARInvoice struct {
 	TotalAmount             float64    `gorm:"type:decimal(15,4);default:0" json:"total_amount"`
 	Status                  string     `gorm:"type:varchar(20);default:'Open'" json:"status"` // Open | Partial | Paid | Cancelled
 	Notes                   string     `gorm:"type:text" json:"notes"`
-	CreatedAt               time.Time  `json:"created_at"`
+	CreatedAt               time.Time  `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID             *uint      `json:"created_by_id"`
 	AmountCollected         float64    `gorm:"type:decimal(15,4);default:0" json:"amount_collected"`
 
@@ -201,7 +201,7 @@ type Collection struct {
 	PaymentMethod        string    `gorm:"type:varchar(20);default:'Cash'" json:"payment_method"`
 	ReferenceNumber      string    `gorm:"type:varchar(50)" json:"reference_number"`
 	Notes                string    `gorm:"type:text" json:"notes"`
-	CreatedAt            time.Time `json:"created_at"`
+	CreatedAt            time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID          *uint     `json:"created_by_id"`
 
 	Customer *Customer        `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`

@@ -6,6 +6,10 @@ export function AddBodyWeightLog(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['app']['App']['AddBodyWeightLog'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function BackupDiagnostics() {
+  return window['go']['app']['App']['BackupDiagnostics']();
+}
+
 export function CancelAPInvoice(arg1) {
   return window['go']['app']['App']['CancelAPInvoice'](arg1);
 }
@@ -142,6 +146,10 @@ export function DeleteUser(arg1) {
   return window['go']['app']['App']['DeleteUser'](arg1);
 }
 
+export function DownloadBackup(arg1) {
+  return window['go']['app']['App']['DownloadBackup'](arg1);
+}
+
 export function GetAPInvoice(arg1) {
   return window['go']['app']['App']['GetAPInvoice'](arg1);
 }
@@ -164,6 +172,14 @@ export function GetAnalytics(arg1, arg2) {
 
 export function GetAuditLogs(arg1) {
   return window['go']['app']['App']['GetAuditLogs'](arg1);
+}
+
+export function GetBackupDir() {
+  return window['go']['app']['App']['GetBackupDir']();
+}
+
+export function GetBackupHistory() {
+  return window['go']['app']['App']['GetBackupHistory']();
 }
 
 export function GetBalanceSheet(arg1) {
@@ -288,10 +304,6 @@ export function ListARInvoices(arg1, arg2) {
 
 export function ListAccountDeterminations() {
   return window['go']['app']['App']['ListAccountDeterminations']();
-}
-
-export function ListBackups() {
-  return window['go']['app']['App']['ListBackups']();
 }
 
 export function ListCollections() {

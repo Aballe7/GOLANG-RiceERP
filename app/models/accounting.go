@@ -15,7 +15,7 @@ type GLAccount struct {
 	IsActive      bool      `gorm:"type:tinyint(1);default:1" json:"is_active"`
 	IsSystem      bool      `gorm:"type:tinyint(1);default:0" json:"is_system"`
 	Description   string    `gorm:"type:text" json:"description"`
-	CreatedAt     time.Time `json:"created_at"`
+	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 
 	Parent   *GLAccount  `gorm:"foreignKey:ParentID" json:"parent,omitempty"`
 	Children []GLAccount `gorm:"foreignKey:ParentID" json:"children,omitempty"`
@@ -72,7 +72,7 @@ type JournalEntry struct {
 	IsReversal      bool      `gorm:"type:tinyint(1);default:0" json:"is_reversal"`
 	ReversedEntryID *uint     `gorm:"index" json:"reversed_entry_id"`
 	CreatedByID     *uint     `json:"created_by_id"`
-	CreatedAt       time.Time `json:"created_at"`
+	CreatedAt       time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 
 	Lines         []JournalEntryLine `gorm:"foreignKey:JournalEntryID;constraint:OnDelete:CASCADE" json:"lines,omitempty"`
 	ReversedEntry *JournalEntry      `gorm:"foreignKey:ReversedEntryID" json:"reversed_entry,omitempty"`

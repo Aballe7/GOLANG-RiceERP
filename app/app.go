@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 
 	appconfig "egglayererp/app/config"
 	"egglayererp/app/constants"
@@ -10,6 +12,7 @@ import (
 	"egglayererp/app/handlers"
 	"egglayererp/app/middleware"
 	"egglayererp/app/models"
+	backupsvc "egglayererp/app/services/backup"
 	flockssvc "egglayererp/app/services/flocks"
 	opssvc "egglayererp/app/services/operations"
 
@@ -25,6 +28,10 @@ type App struct {
 func NewApp() *App { return &App{} }
 
 func (a *App) Startup(ctx context.Context) {
+	a.ctx = ctx
+}
+
+func (a *App) DomReady(ctx context.Context) {
 	a.ctx = ctx
 
 	cfg, err := appconfig.Load()
@@ -46,6 +53,11 @@ func (a *App) Startup(ctx context.Context) {
 		return
 	}
 
+	if err := db.PreMigrateFixup(); err != nil {
+		runtime.EventsEmit(ctx, "startup:error", "Pre-migration fixup failed: "+err.Error())
+		return
+	}
+
 	if err := db.AutoMigrateAll(); err != nil {
 		runtime.EventsEmit(ctx, "startup:error", "Database migration failed: "+err.Error())
 		return
@@ -63,8 +75,6 @@ func (a *App) Startup(ctx context.Context) {
 
 	runtime.EventsEmit(ctx, "startup:ready", nil)
 }
-
-func (a *App) DomReady(ctx context.Context) { a.ctx = ctx }
 func (a *App) Shutdown(ctx context.Context)  {}
 
 // ─────────────────────── Auth ───────────────────────────────────────────────
@@ -490,9 +500,113 @@ func (a *App) GetAnalytics(from, to string) handlers.Response     { return handl
 
 // ─────────────────────── Backup ──────────────────────────────────────────────
 
-func (a *App) CreateBackup() handlers.Response           { return handlers.CreateBackup() }
-func (a *App) ListBackups() handlers.Response            { return handlers.ListBackups() }
+// CreateBackup runs mysqldump to the managed backups directory (~\EggLayerERP\backups).
+// The file is auto-named with a timestamp so it always appears in Backup History.
+// Use DownloadBackup to export a copy to a custom location.
+func (a *App) CreateBackup() handlers.Response {
+	if !middleware.Store.IsAdmin() {
+		return handlers.Response{OK: false, Message: "Unauthorized"}
+	}
+	if a.cfg == nil {
+		return handlers.Response{OK: false, Message: "App configuration not loaded"}
+	}
+	bf, err := backupsvc.CreateBackup(a.cfg)
+	if err != nil {
+		return handlers.Response{OK: false, Message: err.Error()}
+	}
+	return handlers.OkResponse("Backup created successfully", bf)
+}
+
+func (a *App) GetBackupHistory() handlers.Response        { return handlers.ListBackups() }
 func (a *App) DeleteBackup(name string) handlers.Response { return handlers.DeleteBackup(name) }
+
+// BackupDiagnostics returns a plain-text diagnostic report to help debug backup issues.
+func (a *App) BackupDiagnostics() handlers.Response {
+	lines := []string{}
+	add := func(s string) { lines = append(lines, s) }
+
+	add("=== Backup Diagnostics ===")
+	add(fmt.Sprintf("IsAdmin: %v", middleware.Store.IsAdmin()))
+	add(fmt.Sprintf("cfg nil: %v", a.cfg == nil))
+	add(fmt.Sprintf("BackupDir: %s", backupsvc.GetBackupDir()))
+
+	// check dir accessible
+	if _, err := os.Stat(backupsvc.GetBackupDir()); err != nil {
+		add("BackupDir stat error: " + err.Error())
+	} else {
+		add("BackupDir: accessible")
+	}
+
+	if a.cfg != nil {
+		add(fmt.Sprintf("DSN prefix: %.30s...", a.cfg.Database.DSN))
+		// try a real backup
+		add("--- Running mysqldump ---")
+		bf, err := backupsvc.CreateBackup(a.cfg)
+		if err != nil {
+			add("BACKUP ERROR: " + err.Error())
+		} else {
+			add(fmt.Sprintf("SUCCESS: %s (%d bytes)", bf.FileName, bf.FileSizeBytes))
+			// clean up the test file
+			_ = os.Remove(bf.Path)
+			add("(test file removed)")
+		}
+	}
+
+	result := ""
+	for _, l := range lines {
+		result += l + "\n"
+	}
+	return handlers.OkResponse("", result)
+}
+
+// DownloadBackup opens a save-file dialog and copies the backup to the chosen location.
+func (a *App) DownloadBackup(name string) handlers.Response {
+	if !middleware.Store.IsAdmin() {
+		return handlers.Response{OK: false, Message: "Unauthorized"}
+	}
+	srcPath, err := backupsvc.GetBackupPath(name)
+	if err != nil {
+		return handlers.Response{OK: false, Message: err.Error()}
+	}
+	destPath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save Backup File",
+		DefaultFilename: name,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "SQL Files (*.sql)", Pattern: "*.sql"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil || destPath == "" {
+		return handlers.Response{OK: false, Message: "Save cancelled"}
+	}
+	if err := copyFile(srcPath, destPath); err != nil {
+		return handlers.Response{OK: false, Message: "Copy failed: " + err.Error()}
+	}
+	return handlers.OkResponse("Backup saved to "+destPath, nil)
+}
+
+// GetBackupDir returns the current directory where backups are stored.
+func (a *App) GetBackupDir() handlers.Response {
+	if !middleware.Store.IsAdmin() {
+		return handlers.Response{OK: false, Message: "Unauthorized"}
+	}
+	return handlers.OkResponse("", backupsvc.GetBackupDir())
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
 
 // ─────────────────────── Settings ────────────────────────────────────────────
 

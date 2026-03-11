@@ -68,6 +68,60 @@ func AutoMigrateAll() error {
 	)
 }
 
+// PreMigrateFixup repairs created_at columns before AutoMigrateAll runs.
+//
+// MySQL 9.x rejects  datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP  (without
+// the matching fractional-seconds precision on CURRENT_TIMESTAMP), which is
+// exactly what GORM's AutoMigrate generates.  We pre-add / pre-fix every
+// existing table so GORM sees the column already present and skips the ADD.
+//
+// Must be called BEFORE AutoMigrateAll.
+func PreMigrateFixup() error {
+	// 1. Fix any table whose created_at is the wrong base type (e.g. 'date').
+	//    MODIFY to datetime(3) NULL so existing date values are preserved.
+	type wrongCol struct{ Table string }
+	var wrongCols []wrongCol
+	DB.Raw(`SELECT table_name AS ` + "`table`" + `
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		  AND column_name  = 'created_at'
+		  AND data_type   != 'datetime'`).Scan(&wrongCols)
+	for _, c := range wrongCols {
+		sql := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN created_at datetime(3) NULL", c.Table)
+		if err := DB.Exec(sql).Error; err != nil {
+			return fmt.Errorf("fix %s.created_at type: %w", c.Table, err)
+		}
+	}
+
+	// 2. For every existing table that has NO created_at column at all, add
+	//    one using CURRENT_TIMESTAMP(3) — the precision-qualified form that
+	//    MySQL 9.x accepts.  GORM will then skip the ADD when it runs.
+	type tblRow struct{ Table string }
+	var existing []tblRow
+	DB.Raw(`SELECT table_name AS ` + "`table`" + `
+		FROM information_schema.tables
+		WHERE table_schema = DATABASE()`).Scan(&existing)
+
+	for _, t := range existing {
+		var cnt int64
+		DB.Raw(`SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE()
+			  AND table_name   = ?
+			  AND column_name  = 'created_at'`, t.Table).Scan(&cnt)
+		if cnt == 0 {
+			sql := fmt.Sprintf(
+				"ALTER TABLE `%s` ADD COLUMN created_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)",
+				t.Table,
+			)
+			if err := DB.Exec(sql).Error; err != nil {
+				return fmt.Errorf("add %s.created_at: %w", t.Table, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 // RunColumnMigrations handles column renames that GORM AutoMigrate cannot do automatically.
 func RunColumnMigrations() error {
 	// sales_order.invoice_number → sales_order_number

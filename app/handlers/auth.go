@@ -4,6 +4,8 @@ import (
 	"egglayererp/app/middleware"
 	"egglayererp/app/models"
 	"egglayererp/app/services/auth"
+	audit "egglayererp/app/services/audit"
+	"fmt"
 	"time"
 )
 
@@ -43,11 +45,15 @@ func Login(req LoginRequest) Response {
 		return errResponse(err)
 	}
 	middleware.Store.Login(user)
+	audit.LoginLog(user.Username)
 	return okResponse("Login successful", userToResponse(user))
 }
 
 // Logout clears the current session.
 func Logout() Response {
+	if u := middleware.Store.CurrentUser(); u != nil {
+		audit.LogoutLog(u.Username)
+	}
 	middleware.Store.Logout()
 	return okResponse("Logged out", nil)
 }
@@ -108,6 +114,7 @@ func CreateUser(req CreateUserRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Admin", "User", user.Username, "Created user "+user.FullName+" ("+user.Role+")", user.ID)
 	return okResponse("User created successfully", userToResponse(user))
 }
 
@@ -125,6 +132,7 @@ func UpdateUser(req UpdateUserRequest) Response {
 	if err := auth.UpdateUser(req.ID, req.FullName, req.Role, req.IsActive); err != nil {
 		return errResponse(err)
 	}
+	audit.Update("Admin", "User", req.FullName, "Updated user account", req.ID)
 	return okResponse("User updated", nil)
 }
 
@@ -145,6 +153,7 @@ func ChangePassword(req ChangePasswordRequest) Response {
 	if err := auth.ChangePassword(req.UserID, req.NewPassword); err != nil {
 		return errResponse(err)
 	}
+	audit.Update("Admin", "User", "", "Password changed for user ID "+fmt.Sprintf("%d", req.UserID), req.UserID)
 	return okResponse("Password changed successfully", nil)
 }
 
@@ -160,6 +169,7 @@ func SetPermissions(req SetPermissionsRequest) Response {
 	if err := auth.SetPermissions(req.UserID, req.Modules); err != nil {
 		return errResponse(err)
 	}
+	audit.Update("Admin", "User", "", fmt.Sprintf("Permissions updated for user ID %d", req.UserID), req.UserID)
 	return okResponse("Permissions updated", nil)
 }
 
@@ -170,5 +180,6 @@ func DeleteUser(userID uint) Response {
 	if err := auth.DeleteUser(userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Delete("Admin", "User", "", fmt.Sprintf("Deactivated user ID %d", userID), userID)
 	return okResponse("User deactivated", nil)
 }

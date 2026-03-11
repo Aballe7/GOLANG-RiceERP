@@ -4,6 +4,7 @@ import (
 	"egglayererp/app/middleware"
 	"egglayererp/app/models"
 	"egglayererp/app/services/sales"
+	audit "egglayererp/app/services/audit"
 )
 
 // All handler methods in this file require CanAccess("Sales").
@@ -178,6 +179,7 @@ func CreateSalesOrder(req CreateSalesOrderRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Sales", "SalesOrder", so.SalesOrderNumber, "Sales order created for "+so.CustomerNameSnapshot, so.ID)
 	return okResponse("Sales order created", so)
 }
 
@@ -211,6 +213,7 @@ func VoidSalesOrder(id uint) Response {
 	if err := sales.VoidSalesOrder(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Void("Sales", "SalesOrder", "", "Sales order voided", id)
 	return okResponse("Sales order voided", nil)
 }
 
@@ -237,6 +240,7 @@ func CreateDeliveryOrder(req CreateDeliveryOrderRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Sales", "DeliveryOrder", do.DeliveryNumber, "Delivery order created", do.ID)
 	return okResponse("Delivery order created", do)
 }
 
@@ -248,6 +252,7 @@ func ConfirmDeliveryOrder(id uint) Response {
 	if err := sales.ConfirmDeliveryOrder(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Confirm("Sales", "DeliveryOrder", "", "Delivery order confirmed", id)
 	return okResponse("Delivery order confirmed", nil)
 }
 
@@ -305,6 +310,7 @@ func CreateARInvoice(req CreateARInvoiceRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Sales", "ARInvoice", inv.InvoiceNumber, "AR invoice created for "+inv.CustomerNameSnapshot, inv.ID)
 	return okResponse("AR invoice created", inv)
 }
 
@@ -342,6 +348,7 @@ func CancelARInvoice(id uint) Response {
 	if err := sales.CancelARInvoice(id, userID); err != nil {
 		return errResponse(err)
 	}
+	audit.Cancel("Sales", "ARInvoice", "", "AR invoice cancelled", id)
 	return okResponse("AR invoice cancelled", nil)
 }
 
@@ -372,6 +379,7 @@ func CreateCollection(req CreateCollectionRequest) Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Create("Sales", "Collection", collection.CollectionNumber, "Collection created for "+collection.CustomerNameSnapshot, collection.ID)
 	return okResponse("Collection created", collection)
 }
 

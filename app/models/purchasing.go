@@ -16,7 +16,7 @@ type Supplier struct {
 	Categories    string    `gorm:"type:varchar(200)" json:"categories"`
 	Notes         string    `gorm:"type:text" json:"notes"`
 	IsActive      bool      `gorm:"type:tinyint(1);default:1" json:"is_active"`
-	CreatedAt     time.Time `gorm:"type:date" json:"created_at"`
+	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 }
 
 func (Supplier) TableName() string { return "supplier" }
@@ -61,7 +61,7 @@ type DeliveryReceipt struct {
 	ReceivedBy      string    `gorm:"type:varchar(100)" json:"received_by"`
 	SupplierDRRef   string    `gorm:"type:varchar(50)" json:"supplier_dr_ref"`
 	Notes           string    `gorm:"type:text" json:"notes"`
-	CreatedAt       time.Time `json:"created_at"`
+	CreatedAt       time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID     *uint     `json:"created_by_id"`
 	AmountInvoiced  float64   `gorm:"type:decimal(15,4);default:0" json:"amount_invoiced"`
 
@@ -102,7 +102,7 @@ type APInvoice struct {
 	TotalAmount         float64    `gorm:"type:decimal(15,4);default:0" json:"total_amount"`
 	Status              string     `gorm:"type:varchar(20);default:'Open'" json:"status"` // Open | Partial | Paid | Cancelled
 	Notes               string     `gorm:"type:text" json:"notes"`
-	CreatedAt           time.Time  `json:"created_at"`
+	CreatedAt           time.Time  `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID         *uint      `json:"created_by_id"`
 	AmountPaidStored    float64    `gorm:"type:decimal(15,4);default:0" json:"amount_paid_stored"`
 
@@ -148,7 +148,7 @@ type APPayment struct {
 	PaymentMethod         string    `gorm:"type:varchar(20);default:'Cash'" json:"payment_method"`
 	ReferenceNumber       string    `gorm:"type:varchar(50)" json:"reference_number"`
 	Notes                 string    `gorm:"type:text" json:"notes"`
-	CreatedAt             time.Time `json:"created_at"`
+	CreatedAt             time.Time `gorm:"default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 	CreatedByID           *uint     `json:"created_by_id"`
 
 	Supplier *Supplier      `gorm:"foreignKey:SupplierID" json:"supplier,omitempty"`

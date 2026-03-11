@@ -1,0 +1,196 @@
+package db
+
+import (
+	"egglayererp/app/models"
+	"fmt"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+// AutoMigrateAll creates/updates all tables.
+func AutoMigrateAll() error {
+	return DB.AutoMigrate(
+		// Users & Audit
+		&models.User{},
+		&models.AuditLog{},
+
+		// Flocks
+		&models.Flock{},
+		&models.DailyLog{},
+		&models.GrowerLog{},
+		&models.BodyWeightLog{},
+		&models.EggProduction{},
+
+		// Operations
+		&models.VaccineSchedule{},
+		&models.FeedStock{},
+		&models.VaccineStock{},
+
+		// Inventory
+		&models.Inventory{},
+		&models.ItemCategory{},
+		&models.ItemMaster{},
+
+		// Purchasing
+		&models.Supplier{},
+		&models.Purchase{},
+		&models.DeliveryReceipt{},
+		&models.DeliveryReceiptItem{},
+		&models.APInvoice{},
+		&models.APInvoiceItem{},
+		&models.APPayment{},
+		&models.APPaymentLine{},
+
+		// Sales
+		&models.Customer{},
+		&models.PriceGroup{},
+		&models.PriceGroupItem{},
+		&models.SalesOrder{},
+		&models.SalesOrderItem{},
+		&models.DeliveryOrder{},
+		&models.DeliveryOrderItem{},
+		&models.ARInvoice{},
+		&models.ARInvoiceItem{},
+		&models.Collection{},
+		&models.CollectionLine{},
+
+		// Accounting
+		&models.GLAccount{},
+		&models.AccountDetermination{},
+		&models.PaymentMethodAccount{},
+		&models.JournalEntry{},
+		&models.JournalEntryLine{},
+
+		// Settings
+		&models.FarmSettings{},
+	)
+}
+
+// RunColumnMigrations handles column renames that GORM AutoMigrate cannot do automatically.
+func RunColumnMigrations() error {
+	// sales_order.invoice_number → sales_order_number
+	// AutoMigrate may have already added the new column; handle both cases.
+	var oldExists, newExists int64
+	DB.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sales_order' AND column_name = 'invoice_number'").Scan(&oldExists)
+	DB.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sales_order' AND column_name = 'sales_order_number'").Scan(&newExists)
+
+	if oldExists > 0 && newExists > 0 {
+		// Both columns exist: drop the old one (AutoMigrate already created the new one)
+		if err := DB.Exec("ALTER TABLE sales_order DROP COLUMN invoice_number").Error; err != nil {
+			return fmt.Errorf("drop sales_order.invoice_number: %w", err)
+		}
+	} else if oldExists > 0 && newExists == 0 {
+		// Only old column exists: rename it
+		if err := DB.Exec("ALTER TABLE sales_order RENAME COLUMN invoice_number TO sales_order_number").Error; err != nil {
+			return fmt.Errorf("rename sales_order.invoice_number: %w", err)
+		}
+	}
+	return nil
+}
+
+// SeedDefaults seeds default FarmSettings and the first Admin user if none exist.
+func SeedDefaults() error {
+	// Seed default farm settings
+	defaults := map[string]string{
+		"farm_name":    "EggLayer Farm",
+		"farm_address": "",
+		"farm_contact": "",
+		"tray_size":    "30",
+		"currency":     "PHP",
+		"currency_sym": "₱",
+	}
+	for k, v := range defaults {
+		var s models.FarmSettings
+		result := DB.Where("`key` = ?", k).First(&s)
+		if result.Error == gorm.ErrRecordNotFound {
+			DB.Create(&models.FarmSettings{Key: k, Value: v})
+		}
+	}
+
+	// Seed default admin user if no users exist
+	var count int64
+	DB.Model(&models.User{}).Count(&count)
+	if count == 0 {
+		hash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("failed to hash default admin password: %w", err)
+		}
+		now := time.Now()
+		admin := models.User{
+			Username:     "admin",
+			FullName:     "System Administrator",
+			Role:         "Admin",
+			PasswordHash: string(hash),
+			IsActive:     true,
+			CreatedAt:    now,
+		}
+		if err := DB.Create(&admin).Error; err != nil {
+			return fmt.Errorf("failed to create default admin: %w", err)
+		}
+	}
+
+	// Seed default Chart of Accounts if none exist
+	var acctCount int64
+	DB.Model(&models.GLAccount{}).Count(&acctCount)
+	if acctCount == 0 {
+		if err := seedDefaultCOA(); err != nil {
+			return fmt.Errorf("failed to seed chart of accounts: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func seedDefaultCOA() error {
+	accounts := []models.GLAccount{
+		// ASSETS
+		{Code: "1-0000", Name: "ASSETS", Section: "ASSET", AccountType: "HEADER", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1000", Name: "Current Assets", Section: "ASSET", AccountType: "HEADER", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1100", Name: "Cash on Hand", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1110", Name: "GCash", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1120", Name: "Bank Account", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1200", Name: "Accounts Receivable", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1300", Name: "Inventory", Section: "ASSET", AccountType: "HEADER", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1310", Name: "Inventory — Feeds", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1320", Name: "Inventory — Eggs", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1330", Name: "Inventory — Live Birds", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1400", Name: "Goods Received Not Invoiced (GRNI)", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "1-1500", Name: "Input VAT Creditable", Section: "ASSET", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+
+		// LIABILITIES
+		{Code: "2-0000", Name: "LIABILITIES", Section: "LIABILITY", AccountType: "HEADER", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "2-1000", Name: "Current Liabilities", Section: "LIABILITY", AccountType: "HEADER", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "2-1100", Name: "Accounts Payable", Section: "LIABILITY", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "2-1200", Name: "Output VAT Payable", Section: "LIABILITY", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+
+		// EQUITY
+		{Code: "3-0000", Name: "EQUITY", Section: "EQUITY", AccountType: "HEADER", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "3-1000", Name: "Owner's Capital", Section: "EQUITY", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "3-2000", Name: "Retained Earnings", Section: "EQUITY", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+
+		// REVENUE
+		{Code: "4-0000", Name: "REVENUE", Section: "REVENUE", AccountType: "HEADER", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "4-1000", Name: "Egg Sales Revenue", Section: "REVENUE", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "4-2000", Name: "Bird Sales Revenue", Section: "REVENUE", AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true},
+		{Code: "4-9000", Name: "Sales Discount", Section: "REVENUE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+
+		// EXPENSES
+		{Code: "5-0000", Name: "EXPENSES", Section: "EXPENSE", AccountType: "HEADER", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-1000", Name: "Cost of Goods Sold", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-2000", Name: "Feed Expense", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-3000", Name: "Mortality Loss", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-4000", Name: "Veterinary & Medicine Expense", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-5000", Name: "Supplies Expense", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+		{Code: "5-6000", Name: "Purchase Price Variance", Section: "EXPENSE", AccountType: "POSTING", NormalBalance: "DEBIT", IsSystem: true},
+	}
+
+	now := time.Now()
+	for i := range accounts {
+		accounts[i].CreatedAt = now
+	}
+
+	// Insert in order (headers first so foreign keys work if added later)
+	return DB.CreateInBatches(accounts, 10).Error
+}

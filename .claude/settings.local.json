@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/c/Users/Ian Aballe/EggLayerERP-Go\" && go build ./... 2>&1)",
+      "Bash(find \"/c/Users/Ian Aballe/EggLayerERP-Go/app\" -name \"*.go\" | xargs grep -l \"GetDashboard\\\\|DashboardData\" 2>/dev/null)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./... 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./cmd/seed/... 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go run ./cmd/seed/main.go 2>&1)",
+      "Bash(mysql -u egglayer -pegglayer123 egg_layer_erp 2>&1 <<'SQL'\n-- Clear seed data and sentinel\nDELETE FROM farm_settings WHERE `key` = 'seed_done';\nDELETE FROM collection_line;\nDELETE FROM collection;\nDELETE FROM ar_invoice_item;\nDELETE FROM ar_invoice;\nDELETE FROM delivery_order_item;\nDELETE FROM delivery_order;\nDELETE FROM sales_order_item;\nDELETE FROM sales_order;\nDELETE FROM ap_payment_line;\nDELETE FROM ap_payment;\nDELETE FROM ap_invoice_item;\nDELETE FROM ap_invoice;\nDELETE FROM delivery_receipt_item;\nDELETE FROM delivery_receipt;\nDELETE FROM purchase;\nDELETE FROM body_weight_log;\nDELETE FROM grower_log;\nDELETE FROM daily_log;\nDELETE FROM flock;\nDELETE FROM feed_stock;\nDELETE FROM item_master;\nDELETE FROM item_categories;\nDELETE FROM price_group_item;\nDELETE FROM customer;\nDELETE FROM price_group;\nDELETE FROM supplier;\n-- Reset document number counters\nUPDATE farm_settings SET value = '0' WHERE `key` LIKE 'docnum_%';\nSELECT 'cleaned' as status;\nSQL)",
+      "Bash(where mysql:*)",
+      "Read(//c/Program Files/MySQL/MySQL Server 8.0/bin/**)",
+      "Read(//c/xampp/mysql/bin/**)",
+      "Read(//c/wamp64/bin/**)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./cmd/seed/... ./cmd/seed-reset/... 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go run ./cmd/seed-reset/main.go 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./app/... ./cmd/... 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./app/services/reports/... 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && node --check frontend/js/modules/reports.js 2>&1)",
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && for f in frontend/js/modules/*.js frontend/js/app.js frontend/js/api.js; do node --check \"$f\" 2>&1 && echo \"OK: $f\" || echo \"FAIL: $f\"; done)"
+    ]
+  }
+}

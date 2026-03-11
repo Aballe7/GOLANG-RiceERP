@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "EggLayerERP",
+  "outputfilename": "EggLayerERP",
+  "frontend:install": "cmd /c echo no-install",
+  "frontend:build": "cmd /c echo no-build",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "EggLayer Farm",
+    "email": ""
+  },
+  "info": {
+    "companyName": "EggLayer Farm",
+    "productName": "EggLayerERP",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2025 EggLayer Farm",
+    "comments": "Farm ERP System"
+  }
+}

@@ -9,6 +9,8 @@ package purchasing
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"egglayererp/app/db"
@@ -62,6 +64,35 @@ func DeleteSupplier(id uint) error {
 // Purchase CRUD
 // ─────────────────────────────────────────────
 
+// nextPONumber generates the next PO number in the format PO-000-00000
+// by looking at the last non-empty po_number in the purchase table.
+func nextPONumber() (string, error) {
+	var last string
+	if err := db.DB.
+		Model(&models.Purchase{}).
+		Where("po_number <> ''").
+		Order("id DESC").
+		Limit(1).
+		Pluck("po_number", &last).Error; err != nil {
+		return "", err
+	}
+
+	seq := 1
+	if last != "" {
+		code := strings.TrimSpace(last)
+		if strings.HasPrefix(code, "PO-") {
+			code = strings.TrimPrefix(code, "PO-")
+		}
+		code = strings.ReplaceAll(code, "-", "")
+		if n, err := strconv.Atoi(code); err == nil && n >= 0 {
+			seq = n + 1
+		}
+	}
+
+	digits := fmt.Sprintf("%08d", seq)
+	return fmt.Sprintf("PO-%s-%s", digits[:3], digits[3:]), nil
+}
+
 // ListPurchases returns all purchases, newest first.
 func ListPurchases() ([]models.Purchase, error) {
 	var purchases []models.Purchase
@@ -83,6 +114,13 @@ func GetPurchase(id uint) (*models.Purchase, error) {
 // CreatePurchase inserts a new Purchase record.
 func CreatePurchase(p *models.Purchase) error {
 	p.IsActive = true
+	if strings.TrimSpace(p.PONumber) == "" {
+		if po, err := nextPONumber(); err == nil {
+			p.PONumber = po
+		} else {
+			return fmt.Errorf("failed to generate PO number: %w", err)
+		}
+	}
 	return db.DB.Create(p).Error
 }
 
@@ -141,7 +179,8 @@ func GetDeliveryReceipt(id uint) (*models.DeliveryReceipt, error) {
 // ListDeliveryReceipts returns DeliveryReceipts. If purchaseID is 0, all records are returned.
 func ListDeliveryReceipts(purchaseID uint) ([]models.DeliveryReceipt, error) {
 	var drs []models.DeliveryReceipt
-	q := db.DB.Preload("Items").Order("id DESC")
+	// include items and parent purchase so list views can show supplier and PO
+	q := db.DB.Preload("Items").Preload("Purchase").Order("id DESC")
 	if purchaseID != 0 {
 		q = q.Where("purchase_id = ?", purchaseID)
 	}
@@ -174,10 +213,21 @@ func ConfirmDeliveryReceipt(id uint, userID *uint) error {
 			return err
 		}
 
-		// Update Purchase.amount_received (increment)
+		// Update Purchase.amount_received (increment) and adjust delivery status
+		var purch models.Purchase
+		if err := tx.First(&purch, dr.PurchaseID).Error; err != nil {
+			return err
+		}
+		newAmount := purch.AmountReceived + totalReceived
+		status := "Partial"
+		if newAmount >= purch.TotalCost-0.005 {
+			status = "Delivered"
+		}
 		if err := tx.Model(&models.Purchase{}).Where("id = ?", dr.PurchaseID).
-			UpdateColumn("amount_received", gorm.Expr("amount_received + ?", totalReceived)).
-			Error; err != nil {
+			Updates(map[string]interface{}{
+				"amount_received": gorm.Expr("amount_received + ?", totalReceived),
+				"payment_status":  status,
+			}).Error; err != nil {
 			return err
 		}
 

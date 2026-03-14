@@ -92,7 +92,7 @@ func EggInventory() (map[string]int, error) {
 		QuantityDelivered float64
 	}
 	var doItems []doRow
-	if err := db.DB.Table("delivery_order_item doi").
+	if err := db.DB.Table("do_line doi").
 		Select("doi.sku, doi.unit, doi.quantity_delivered").
 		Joins("JOIN delivery_order do ON do.id = doi.delivery_order_id").
 		Where("do.status = ?", "Delivered").
@@ -111,7 +111,7 @@ func EggInventory() (map[string]int, error) {
 		Quantity float64
 	}
 	var arItems []arRow
-	if err := db.DB.Table("ar_invoice_item aii").
+	if err := db.DB.Table("ar_invoice_line aii").
 		Select("aii.sku, aii.unit, aii.quantity").
 		Joins("JOIN ar_invoice ai ON ai.id = aii.ar_invoice_id").
 		Where("ai.delivery_order_id IS NULL AND ai.status != ?", "Cancelled").
@@ -152,7 +152,7 @@ func EggInventory() (map[string]int, error) {
 			Quantity float64
 		}
 		var soItems []soItemRow
-		if err := db.DB.Table("sales_order_item").
+		if err := db.DB.Table("so_line").
 			Select("sku, unit, quantity").
 			Where("order_id IN ?", soIDs).
 			Scan(&soItems).Error; err != nil {
@@ -354,3 +354,117 @@ func UpdateVaccineStock(name string, quantity int) error {
 	return db.DB.Model(&vs).Update("quantity", quantity).Error
 }
 
+
+// ─────────────────────────────────────────────
+// UoM Master (OUOM)
+// ─────────────────────────────────────────────
+
+func ListUoMMasters() ([]models.UoMMaster, error) {
+	var items []models.UoMMaster
+	err := db.DB.Order("uom_code").Find(&items).Error
+	return items, err
+}
+
+func GetUoMMaster(entry uint) (*models.UoMMaster, error) {
+	var item models.UoMMaster
+	err := db.DB.First(&item, entry).Error
+	return &item, err
+}
+
+func CreateUoMMaster(item *models.UoMMaster) error {
+	return db.DB.Create(item).Error
+}
+
+func UpdateUoMMaster(entry uint, updates map[string]interface{}) error {
+	return db.DB.Model(&models.UoMMaster{}).Where("uom_entry = ?", entry).Updates(updates).Error
+}
+
+func DeleteUoMMaster(entry uint) error {
+	return db.DB.Delete(&models.UoMMaster{}, entry).Error
+}
+
+// ─────────────────────────────────────────────
+// UoM Groups (OUGP)
+// ─────────────────────────────────────────────
+
+func ListUoMGroups() ([]models.UoMGroup, error) {
+	var groups []models.UoMGroup
+	err := db.DB.Preload("Lines.Unit").Preload("BaseUnit").Order("ugp_code").Find(&groups).Error
+	return groups, err
+}
+
+func GetUoMGroup(entry uint) (*models.UoMGroup, error) {
+	var g models.UoMGroup
+	err := db.DB.Preload("Lines.Unit").Preload("BaseUnit").First(&g, entry).Error
+	return &g, err
+}
+
+type CreateUoMGroupRequest struct {
+	UgpCode string               `json:"ugp_code"`
+	UgpName string               `json:"ugp_name"`
+	BaseUom int                  `json:"base_uom"`
+	Lines   []UoMGroupLineInput  `json:"lines"`
+}
+
+type UoMGroupLineInput struct {
+	UomEntry uint    `json:"uom_entry"`
+	AltQty   float64 `json:"alt_qty"`
+	BaseQty  float64 `json:"base_qty"`
+}
+
+func CreateUoMGroup(req CreateUoMGroupRequest) (*models.UoMGroup, error) {
+	g := models.UoMGroup{
+		UgpCode:    req.UgpCode,
+		UgpName:    req.UgpName,
+		BaseUom:    req.BaseUom,
+		DataSource: "M",
+	}
+	if err := db.DB.Create(&g).Error; err != nil {
+		return nil, err
+	}
+	for i, l := range req.Lines {
+		line := models.UoMGroupLine{
+			UgpEntry: g.UgpEntry,
+			LineNum:  i,
+			UomEntry: l.UomEntry,
+			AltQty:   l.AltQty,
+			BaseQty:  l.BaseQty,
+			ObjType:  "173",
+		}
+		if err := db.DB.Create(&line).Error; err != nil {
+			return nil, err
+		}
+	}
+	return GetUoMGroup(g.UgpEntry)
+}
+
+func UpdateUoMGroup(entry uint, ugpCode, ugpName string, baseUom int, lines []UoMGroupLineInput) error {
+	if err := db.DB.Model(&models.UoMGroup{}).Where("ugp_entry = ?", entry).Updates(map[string]interface{}{
+		"ugp_code": ugpCode,
+		"ugp_name": ugpName,
+		"base_uom": baseUom,
+	}).Error; err != nil {
+		return err
+	}
+	// Replace lines
+	db.DB.Where("ugp_entry = ?", entry).Delete(&models.UoMGroupLine{})
+	for i, l := range lines {
+		line := models.UoMGroupLine{
+			UgpEntry: entry,
+			LineNum:  i,
+			UomEntry: l.UomEntry,
+			AltQty:   l.AltQty,
+			BaseQty:  l.BaseQty,
+			ObjType:  "173",
+		}
+		if err := db.DB.Create(&line).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func DeleteUoMGroup(entry uint) error {
+	db.DB.Where("ugp_entry = ?", entry).Delete(&models.UoMGroupLine{})
+	return db.DB.Delete(&models.UoMGroup{}, entry).Error
+}

@@ -29,6 +29,8 @@ Last updated: 2026-03-10 (session 3)
 ### UI Features Added ✓
 - [x] Feed dashboard icon changed from `bi-fuel-pump` → `bi-bag` (inventory.js + operations.js)
 - [x] New Purchase Order form (`loadNewPurchaseForm`) in purchasing.js
+- [x] Delivery receipt creation now supplier‑first; undelivered POs filtered by supplier
+- [x] Payment status on purchase orders repurposed as delivery status (Partial/Delivered)
 - [x] Purchase detail view (`loadPurchaseDetail`) in purchasing.js
 - [x] **Item Categories UI** — full CRUD under Inventory → Item Categories tab
   - Model: `ItemCategory` (`item_categories` table)
@@ -116,6 +118,75 @@ Last updated: 2026-03-10 (session 3)
 - Account Determination must be configured in UI before JE posting works
 - Full end-to-end testing: Purchase → DR → AP Invoice → Payment → JE verification
 - Full end-to-end testing: Sales Order → Delivery → AR Invoice → Collection → JE verification
+
+---
+
+## Purchasing Process Map (Testing Guide)
+
+### 1. Purchase Order (PO)
+
+- **Create PO header**
+  - Screen: `Purchasing → Purchases → New Purchase Order`
+  - Backend:
+    - Writes `purchase_header` (header) and `purchase_line` (single line for now).
+    - Also mirrors to legacy `purchase` row (until fully retired).
+  - Key fields to verify:
+    - Header: supplier, posting date, PO number, total amount.
+    - Line: item description, quantity, unit, unit price, line total.
+
+### 2. Delivery Receipt (DR)
+
+- **Create DR from one or more POs**
+  - Screen: `Purchasing → Delivery Receipts → New Delivery Receipt`
+  - Flow:
+    - Select supplier → system filters undelivered POs for that supplier.
+    - Multi-select POs to receive against.
+    - Enter DR date, supplier DR ref, notes.
+  - Backend:
+    - Creates one `delivery_receipt` per selected PO (current implementation).
+    - Each DR links back to its PO via `purchase_id` and has `dr_line` rows.
+  - Status:
+    - New DRs are `Draft`.
+
+- **Confirm DR**
+  - Screen: DR detail → `Confirm Receipt`.
+  - Backend:
+    - Changes DR status to `Received`.
+    - Increments `purchase.amount_received`.
+    - Sets PO delivery status to `Partial` / `Delivered`.
+    - Posts JE: **DR_CONFIRM** (DR → GRNI & Inventory Received).
+
+### 3. AP Invoice
+
+- **Create AP Invoice from PO or DR**
+  - Screen: `Purchasing → AP Invoices → New AP Invoice`
+  - Source:
+    - Choose PO only, or DR (when goods already received).
+    - Items grid is prefilled from PO line or DR lines; quantities/prices can be adjusted.
+  - Backend:
+    - Writes `ap_invoice` header + `ap_invoice_line` rows.
+    - Updates `purchase.amount_invoiced` and, if linked to DR, `delivery_receipt.amount_invoiced`.
+    - Posts JE: **AP_INVOICE** (GRNI or Inventory Received ↔ AP Payable).
+
+### 4. AP Payment
+
+- **Record payment against one or more AP Invoices**
+  - Screen: `Purchasing → AP Payments → New AP Payment`
+  - Flow:
+    - Select supplier → system lists Open/Partial AP Invoices.
+    - Choose invoices and amounts to apply.
+  - Backend:
+    - Writes `ap_payment` header + `ap_payment_line` rows.
+    - Updates `ap_invoice.amount_paid_stored` and status (Open → Partial → Paid).
+    - Updates `purchase.amount_settled`.
+    - Posts JE: **AP_PAYMENT** (AP Clearing ↔ Cash/Bank OUTFLOW).
+
+### 5. Quick End-to-End Test Path
+
+1. Create PO for a supplier (verify header + line saved).
+2. Create DR for that PO and **Confirm** it (verify PO delivery status and GRNI/Inventory JE).
+3. Create AP Invoice from that DR (verify totals, status, and AP JE).
+4. Create AP Payment for that invoice (verify invoice status, purchase settlement, and payment JE).
 
 ---
 

@@ -629,85 +629,161 @@ async function loadRetireFlock(id) {
 
 async function loadTransferFlock(id) {
   showLoading();
-  const [flock, houses] = await Promise.all([api.GetFlock(id), api.GetLayerHouses()]);
+  const [flock, layerHouses] = await Promise.all([api.GetFlock(id), api.GetLayerHouses()]);
   if (!flock) {
     showView(`<div class="alert alert-warning m-4">Flock not found.</div>`);
     return;
   }
 
-  const houseOptions = (houses || [])
-    .filter(h => h !== flock.house_number)
-    .map(h => `<option value="${h}">${h}</option>`)
+  // Compute age in weeks from hatch_date
+  let ageStr = '—';
+  if (flock.hatch_date) {
+    const diffDays = Math.floor((Date.now() - new Date(flock.hatch_date)) / 86400000);
+    ageStr = Math.floor(diffDays / 7) + ' weeks';
+  }
+  const hatchStr = flock.hatch_date
+    ? new Date(flock.hatch_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : '—';
+
+  const existingBadges = (layerHouses || [])
+    .map(h => `<span class="badge bg-primary me-1">H-${_esc(h)}</span>`)
     .join('');
 
+  const today = new Date().toISOString().slice(0, 10);
+
   showView(`
-    <div class="container p-4" style="max-width:540px">
-      <div class="d-flex align-items-center gap-2 mb-4">
+    <div class="container py-4" style="max-width:680px">
+
+      <!-- Header -->
+      <div class="d-flex align-items-center gap-3 mb-4">
         <button class="btn btn-outline-secondary btn-sm" onclick="navigate('#/flocks')">
           <i class="bi bi-arrow-left"></i>
         </button>
-        <h4 class="fw-bold mb-0">Transfer Flock</h4>
-      </div>
-
-      <div class="card border-0 shadow-sm">
-        <div class="card-body">
-          <p class="text-muted mb-3">
-            Transferring <strong>${flock.name}</strong> from House <strong>${flock.house_number}</strong>.
-          </p>
-          <form id="transferFlockForm">
-            <div class="mb-3">
-              <label class="form-label">Destination House <span class="text-danger">*</span></label>
-              <select class="form-select" id="transferHouse" required>
-                <option value="">Select house…</option>
-                ${houseOptions || '<option disabled>No other houses available</option>'}
-              </select>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">Transfer Date <span class="text-danger">*</span></label>
-              <input type="date" class="form-control" id="transferDate" required value="${new Date().toISOString().slice(0,10)}">
-            </div>
-            <div class="mb-3">
-              <label class="form-label">Number of Birds to Transfer <span class="text-danger">*</span></label>
-              <input type="number" class="form-control" id="transferCount" required min="1"
-                max="${flock.current_count ?? ''}" placeholder="0">
-              <div class="form-text">Available: ${formatNumber(flock.current_count ?? 0)} birds</div>
-            </div>
-            <div class="mb-3">
-              <label class="form-label">Notes</label>
-              <textarea class="form-control" id="transferNotes" rows="2"></textarea>
-            </div>
-            <div class="d-flex gap-2">
-              <button type="submit" class="btn btn-warning px-4">
-                <i class="bi bi-arrow-left-right me-1"></i>Transfer
-              </button>
-              <button type="button" class="btn btn-outline-secondary" onclick="navigate('#/flocks')">Cancel</button>
-            </div>
-          </form>
+        <div>
+          <h4 class="fw-bold mb-0">
+            <i class="bi bi-arrow-right-circle me-2 text-warning"></i>Transfer Flock to Layer House
+          </h4>
+          <small class="text-muted">Grower → Layer transition</small>
         </div>
       </div>
+
+      <!-- Flock Summary Card -->
+      <div class="card border-warning border-2 shadow-sm mb-4">
+        <div class="card-header bg-warning bg-opacity-10 border-0 py-3">
+          <h6 class="fw-bold mb-0"><i class="bi bi-egg me-2 text-warning"></i>Flock Being Transferred</h6>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Batch Name</p>
+              <p class="fw-bold mb-0">${_esc(flock.name)}</p>
+            </div>
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Current House</p>
+              <p class="fw-bold mb-0">
+                <span class="badge bg-warning text-dark me-1">Grower</span>H-${_esc(flock.house_number)}
+              </p>
+            </div>
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Bird Count</p>
+              <p class="fw-bold mb-0">${formatNumber(flock.current_count)} birds</p>
+            </div>
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Breed</p>
+              <p class="fw-bold mb-0">${_esc(flock.breed || '—')}</p>
+            </div>
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Hatch Date</p>
+              <p class="fw-bold mb-0">${hatchStr}</p>
+            </div>
+            <div class="col-6 col-md-4">
+              <p class="small text-muted mb-0">Age</p>
+              <p class="fw-bold mb-0">${ageStr}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transfer Form -->
+      <form id="transferFlockForm">
+        <div class="card shadow-sm border-0 mb-3">
+          <div class="card-header bg-primary bg-opacity-10 border-0 py-3">
+            <h6 class="fw-bold mb-0"><i class="bi bi-house-door me-2 text-primary"></i>Destination Layer House</h6>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label small fw-bold">
+                  Layer House Number <span class="text-danger">*</span>
+                </label>
+                <input type="text" class="form-control" id="transferHouseNumber"
+                       placeholder="e.g. 3" required autofocus>
+                ${existingBadges ? `<div class="form-text">Existing layer houses: ${existingBadges}</div>` : ''}
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small fw-bold">Building / Section</label>
+                <input type="text" class="form-control" id="transferBuilding"
+                       placeholder="e.g. Building A"
+                       value="${_esc(flock.building_name || '')}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small fw-bold">Transfer Date</label>
+                <input type="date" class="form-control" id="transferDate" value="${today}">
+              </div>
+              <div class="col-12">
+                <label class="form-label small fw-bold">Notes / Remarks</label>
+                <textarea class="form-control" id="transferNotes" rows="2"
+                          placeholder="e.g. Birds moved to new layer house, started layer feed…"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- What this does -->
+        <div class="alert alert-info d-flex gap-2 mb-4">
+          <i class="bi bi-info-circle-fill flex-shrink-0 mt-1"></i>
+          <div class="small">
+            <strong>What this does:</strong>
+            <ul class="mb-0 mt-1">
+              <li>Changes flock type from <strong>Grower → Layer</strong></li>
+              <li>Assigns the flock to the new Layer house number</li>
+              <li>Flock will appear on the dashboard under Layer Houses</li>
+              <li>Daily logs will now include egg harvest fields</li>
+              <li><strong>This action cannot be undone</strong> from the UI</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="d-grid gap-2">
+          <button type="submit" class="btn btn-warning btn-lg fw-bold py-3" id="transferSubmitBtn">
+            <i class="bi bi-arrow-right-circle me-2"></i>Confirm Transfer
+          </button>
+          <button type="button" class="btn btn-outline-secondary" onclick="navigate('#/flocks')">Cancel</button>
+        </div>
+      </form>
     </div>
   `);
 
   document.getElementById('transferFlockForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const payload = {
-      flock_id:         id,
-      dest_house:       document.getElementById('transferHouse').value,
-      transfer_date:    document.getElementById('transferDate').value,
-      birds_transferred: parseInt(document.getElementById('transferCount').value, 10),
-      notes:            document.getElementById('transferNotes').value.trim(),
-    };
-    const btn = e.target.querySelector('[type=submit]');
+    const newHouse = document.getElementById('transferHouseNumber').value.trim();
+    if (!confirm(`Confirm transfer of ${flock.name} to Layer House ${newHouse}? This cannot be undone.`)) return;
+
+    const btn = document.getElementById('transferSubmitBtn');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Transferring…';
-    const result = await api.TransferFlock(payload);
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Transferring…';
+
+    const result = await api.TransferFlock({
+      id:               id,
+      new_house_number: newHouse,
+      new_building:     document.getElementById('transferBuilding').value.trim(),
+    });
+
     if (result) {
-      toast('Flock transferred successfully.', 'success');
       navigate('#/flocks');
     } else {
-      toast('Failed to transfer flock.', 'danger');
       btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-arrow-left-right me-1"></i>Transfer';
+      btn.innerHTML = '<i class="bi bi-arrow-right-circle me-2"></i>Confirm Transfer';
     }
   });
 }

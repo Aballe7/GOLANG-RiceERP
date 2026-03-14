@@ -121,12 +121,38 @@ func UpdatePurchase(id uint, updates map[string]interface{}) Response {
 	return okResponse("Purchase updated", nil)
 }
 
+// CreatePurchaseHeader handles creation of a new PO with multiple line items.
+func CreatePurchaseHeader(req purchasing.CreatePurchaseParams) Response {
+	if r, ok := checkPurchasing(); !ok {
+		return r
+	}
+	userID := middleware.Store.UserID()
+	h, err := purchasing.CreatePurchaseHeader(req, userID)
+	if err != nil {
+		return errResponse(err)
+	}
+	audit.Create("Purchasing", "Purchase", h.PONumber, "Purchase order created", h.ID)
+	return okResponse("Purchase created", h)
+}
+
+// GetNextPONumber returns the next available PO number for UI preview.
+func GetNextPONumber() Response {
+	if r, ok := checkPurchasing(); !ok {
+		return r
+	}
+	num, err := purchasing.NextPONumberForUI()
+	if err != nil {
+		return errResponse(err)
+	}
+	return okResponse("", num)
+}
+
 // ─────────────────────────────────────────────
 // Delivery Receipt
 // ─────────────────────────────────────────────
 
 type CreateDeliveryReceiptRequest struct {
-	PurchaseID    uint                         `json:"purchase_id"`
+	PurchaseIDs   []uint                       `json:"purchase_ids"`
 	Date          string                       `json:"date"`
 	ReceivedBy    string                       `json:"received_by"`
 	SupplierDRRef string                       `json:"supplier_dr_ref"`
@@ -138,16 +164,23 @@ func CreateDeliveryReceipt(req CreateDeliveryReceiptRequest) Response {
 	if r, ok := checkPurchasing(); !ok {
 		return r
 	}
-	userID := middleware.Store.UserID()
-	dr, err := purchasing.CreateDeliveryReceipt(
-		req.PurchaseID, req.Date, req.ReceivedBy,
-		req.SupplierDRRef, req.Notes, req.Items, userID,
-	)
-	if err != nil {
-		return errResponse(err)
+	if len(req.PurchaseIDs) == 0 {
+		return errMsg("At least one purchase order must be selected")
 	}
-	audit.Create("Purchasing", "DeliveryReceipt", dr.DRNumber, "Delivery receipt created", dr.ID)
-	return okResponse("Delivery receipt created", dr)
+	userID := middleware.Store.UserID()
+	var created []*models.DeliveryReceipt
+	for _, pid := range req.PurchaseIDs {
+		dr, err := purchasing.CreateDeliveryReceipt(
+			pid, req.Date, req.ReceivedBy,
+			req.SupplierDRRef, req.Notes, req.Items, userID,
+		)
+		if err != nil {
+			return errResponse(err)
+		}
+		audit.Create("Purchasing", "DeliveryReceipt", dr.DRNumber, "Delivery receipt created", dr.ID)
+		created = append(created, dr)
+	}
+	return okResponse("Delivery receipt(s) created", created)
 }
 
 func GetDeliveryReceipt(id uint) Response {

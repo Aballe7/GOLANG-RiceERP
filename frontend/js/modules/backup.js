@@ -305,11 +305,22 @@ async function createBackupAndSave() {
 
   // Open save dialog and copy file to chosen location.
   toast('Opening save dialog…', 'info');
-  const saved = await api.DownloadBackup(fname);
+  let dlResp;
+  try {
+    dlResp = await window.go.app.App.DownloadBackup(fname);
+  } catch (ex) {
+    setLoading(false);
+    showBackupError('Download failed: ' + (ex?.message || String(ex)));
+    return;
+  }
   setLoading(false);
-
-  if (!saved) {
-    toast('Save cancelled or failed.', 'warning');
+  if (!dlResp || !dlResp.ok) {
+    const msg = dlResp?.message || '';
+    if (msg.toLowerCase().includes('cancel')) {
+      toast('Save cancelled.', 'warning');
+    } else {
+      showBackupError(msg || 'Download failed.');
+    }
   }
 
   await Modules.Backup.load();
@@ -327,9 +338,20 @@ function _showBackupInlineError(msg) {
 
 async function downloadBackup(fileName) {
   toast('Opening save dialog…', 'info');
-  const result = await api.DownloadBackup(fileName);
-  if (!result) {
-    toast('Save cancelled or failed.', 'warning');
+  let resp;
+  try {
+    resp = await window.go.app.App.DownloadBackup(fileName);
+  } catch (ex) {
+    showBackupError('Download failed: ' + (ex?.message || String(ex)));
+    return;
+  }
+  if (!resp || !resp.ok) {
+    const msg = resp?.message || '';
+    if (msg.toLowerCase().includes('cancel')) {
+      toast('Save cancelled.', 'warning');
+    } else {
+      showBackupError(msg || 'Download failed.');
+    }
     return;
   }
   toast('Backup saved successfully.', 'success');

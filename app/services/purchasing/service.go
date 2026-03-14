@@ -64,6 +64,26 @@ func DeleteSupplier(id uint) error {
 // Purchase CRUD
 // ─────────────────────────────────────────────
 
+// POLineInput is a DTO for creating/updating purchase lines from the UI.
+type POLineInput struct {
+	Category  string  `json:"category"`
+	ItemName  string  `json:"item_name"`
+	Unit      string  `json:"unit"`
+	Quantity  float64 `json:"quantity"`
+	UnitPrice float64 `json:"unit_price"`
+}
+
+// CreatePurchaseParams holds header + line items for a new PO.
+type CreatePurchaseParams struct {
+	Date          string        `json:"date"`           // ISO8601 from JS
+	SupplierID    *uint         `json:"supplier_id"`    // optional FK
+	SupplierName  string        `json:"supplier"`       // snapshot
+	PaymentMethod string        `json:"payment_method"` // Cash, Bank, etc.
+	Remarks       string        `json:"remarks"`
+	PONumber      string        `json:"po_number"` // optional; if blank, generated on save
+	Lines         []POLineInput `json:"lines"`
+}
+
 // nextPONumber generates the next PO number in the format PO-000-00000
 // by looking at the last non-empty po_number in the purchase table.
 func nextPONumber() (string, error) {
@@ -91,6 +111,11 @@ func nextPONumber() (string, error) {
 
 	digits := fmt.Sprintf("%08d", seq)
 	return fmt.Sprintf("PO-%s-%s", digits[:3], digits[3:]), nil
+}
+
+// NextPONumberForUI is a thin wrapper exposed for the UI to show a preview.
+func NextPONumberForUI() (string, error) {
+	return nextPONumber()
 }
 
 // ListPurchases returns all purchases, newest first.
@@ -121,7 +146,168 @@ func CreatePurchase(p *models.Purchase) error {
 			return fmt.Errorf("failed to generate PO number: %w", err)
 		}
 	}
-	return db.DB.Create(p).Error
+	if err := db.DB.Create(p).Error; err != nil {
+		return err
+	}
+
+	// Also mirror into the new PurchaseHeader / PurchaseLine tables so that
+	// future features (multi-line POs, multi-PO DRs) can use the normalized model.
+	return createHeaderAndLineFromPurchase(p)
+}
+
+// CreatePurchaseHeader creates a new PurchaseHeader with multiple lines and
+// a summarized legacy Purchase row for compatibility with existing flows.
+func CreatePurchaseHeader(params CreatePurchaseParams, createdByID *uint) (*models.PurchaseHeader, error) {
+	if len(params.Lines) == 0 {
+		return nil, fmt.Errorf("at least one line item is required")
+	}
+
+	// Parse date from ISO8601 produced by JS Date.toISOString()
+	parsedDate, err := time.Parse(time.RFC3339, params.Date)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date format: %w", err)
+	}
+
+	poNum := strings.TrimSpace(params.PONumber)
+	if poNum == "" {
+		poNum, err = nextPONumber()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate PO number: %w", err)
+		}
+	}
+
+	// Calculate totals from lines
+	var totalQty, grandTotal float64
+	for _, l := range params.Lines {
+		lineTotal := l.Quantity * l.UnitPrice
+		totalQty += l.Quantity
+		grandTotal += lineTotal
+	}
+
+	var header *models.PurchaseHeader
+	err = db.DB.Transaction(func(tx *gorm.DB) error {
+		h := &models.PurchaseHeader{
+			PONumber:     poNum,
+			DocNum:       0, // optional sequential docnum; not used yet
+			Status:       "O",
+			SupplierID:   params.SupplierID,
+			SupplierCode: "",
+			SupplierName: params.SupplierName,
+			PostingDate:  parsedDate,
+			DeliveryDate: nil,
+			TaxDate:      nil,
+			RefNumber:    "",
+			Currency:     "PHP",
+			DocTotal:     grandTotal,
+			VatSum:       0,
+			Comments:     params.Remarks,
+		}
+		if err := tx.Create(h).Error; err != nil {
+			return err
+		}
+
+		// Create lines
+		for idx, l := range params.Lines {
+			lineTotal := l.Quantity * l.UnitPrice
+			pl := &models.PurchaseLine{
+				HeaderID:      h.ID,
+				LineNum:       idx,
+				ItemCode:      "",
+				Description:   l.ItemName,
+				Quantity:      l.Quantity,
+				OpenQty:       l.Quantity,
+				Price:         l.UnitPrice,
+				LineTotal:     lineTotal,
+				WarehouseCode: "",
+				AccountCode:   "",
+				TaxCode:       "",
+				ProjectCode:   "",
+				CostCenter:    "",
+				LineStatus:    "O",
+			}
+			if err := tx.Create(pl).Error; err != nil {
+				return err
+			}
+		}
+
+		// Create a summarized legacy Purchase row so existing DR/AP flows continue to work.
+		summaryItem := params.Lines[0]
+		p := &models.Purchase{
+			Date:          parsedDate,
+			Category:      summaryItem.Category,
+			ItemName:      summaryItem.ItemName,
+			Quantity:      totalQty,
+			Unit:          summaryItem.Unit,
+			UnitPrice:     summaryItem.UnitPrice,
+			TotalCost:     grandTotal,
+			Supplier:      params.SupplierName,
+			SupplierID:    params.SupplierID,
+			PONumber:      poNum,
+			InvoiceNumber: "",
+			ReceivedBy:    "",
+			PaymentStatus: "Undelivered",
+			AmountPaid:    0,
+			PaymentMethod: params.PaymentMethod,
+			Remarks:       params.Remarks,
+			CreatedByID:   createdByID,
+			IsActive:      true,
+		}
+		if err := tx.Create(p).Error; err != nil {
+			return err
+		}
+
+		header = h
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+// createHeaderAndLineFromPurchase creates a PurchaseHeader and a single PurchaseLine
+// based on the legacy Purchase record. This keeps existing flows working while
+// new features can rely on the header/line schema.
+func createHeaderAndLineFromPurchase(p *models.Purchase) error {
+	header := &models.PurchaseHeader{
+		// DocNum: for now, reuse the numeric ID so it is unique and simple.
+		DocNum:       int(p.ID),
+		Status:       "O",
+		SupplierID:   p.SupplierID,
+		SupplierCode: "",
+		SupplierName: p.Supplier,
+		PostingDate:  p.Date,
+		DeliveryDate: nil,
+		TaxDate:      nil,
+		RefNumber:    p.InvoiceNumber,
+		Currency:     "PHP",
+		DocTotal:     p.TotalCost,
+		VatSum:       0,
+		Comments:     p.Remarks,
+	}
+
+	if err := db.DB.Create(header).Error; err != nil {
+		return err
+	}
+
+	line := &models.PurchaseLine{
+		HeaderID:      header.ID,
+		LineNum:       0,
+		ItemCode:      "",
+		Description:   p.ItemName,
+		Quantity:      p.Quantity,
+		OpenQty:       p.Quantity,
+		Price:         p.UnitPrice,
+		LineTotal:     p.TotalCost,
+		WarehouseCode: "",
+		AccountCode:   "",
+		TaxCode:       "",
+		ProjectCode:   "",
+		CostCenter:    "",
+		LineStatus:    "O",
+	}
+
+	return db.DB.Create(line).Error
 }
 
 // UpdatePurchase applies partial updates to a Purchase.

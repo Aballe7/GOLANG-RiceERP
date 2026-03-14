@@ -90,12 +90,24 @@ export function CreatePurchase(arg1) {
   return window['go']['app']['App']['CreatePurchase'](arg1);
 }
 
+export function CreatePurchaseHeader(arg1) {
+  return window['go']['app']['App']['CreatePurchaseHeader'](arg1);
+}
+
 export function CreateSalesOrder(arg1) {
   return window['go']['app']['App']['CreateSalesOrder'](arg1);
 }
 
 export function CreateSupplier(arg1) {
   return window['go']['app']['App']['CreateSupplier'](arg1);
+}
+
+export function CreateUoMGroup(arg1) {
+  return window['go']['app']['App']['CreateUoMGroup'](arg1);
+}
+
+export function CreateUoMMaster(arg1) {
+  return window['go']['app']['App']['CreateUoMMaster'](arg1);
 }
 
 export function CreateUser(arg1) {
@@ -140,6 +152,14 @@ export function DeletePriceGroup(arg1) {
 
 export function DeleteSupplier(arg1) {
   return window['go']['app']['App']['DeleteSupplier'](arg1);
+}
+
+export function DeleteUoMGroup(arg1) {
+  return window['go']['app']['App']['DeleteUoMGroup'](arg1);
+}
+
+export function DeleteUoMMaster(arg1) {
+  return window['go']['app']['App']['DeleteUoMMaster'](arg1);
 }
 
 export function DeleteUser(arg1) {
@@ -266,6 +286,10 @@ export function GetLayerHouses() {
   return window['go']['app']['App']['GetLayerHouses']();
 }
 
+export function GetNextPONumber() {
+  return window['go']['app']['App']['GetNextPONumber']();
+}
+
 export function GetPnL(arg1, arg2) {
   return window['go']['app']['App']['GetPnL'](arg1, arg2);
 }
@@ -288,6 +312,14 @@ export function GetSalesOrder(arg1) {
 
 export function GetSupplier(arg1) {
   return window['go']['app']['App']['GetSupplier'](arg1);
+}
+
+export function GetUoMGroup(arg1) {
+  return window['go']['app']['App']['GetUoMGroup'](arg1);
+}
+
+export function GetUoMMaster(arg1) {
+  return window['go']['app']['App']['GetUoMMaster'](arg1);
 }
 
 export function ListAPInvoices(arg1, arg2) {
@@ -364,6 +396,14 @@ export function ListSalesOrders() {
 
 export function ListSuppliers(arg1) {
   return window['go']['app']['App']['ListSuppliers'](arg1);
+}
+
+export function ListUoMGroups() {
+  return window['go']['app']['App']['ListUoMGroups']();
+}
+
+export function ListUoMMasters() {
+  return window['go']['app']['App']['ListUoMMasters']();
 }
 
 export function ListUsers() {
@@ -464,6 +504,14 @@ export function UpdatePurchase(arg1, arg2) {
 
 export function UpdateSupplier(arg1, arg2) {
   return window['go']['app']['App']['UpdateSupplier'](arg1, arg2);
+}
+
+export function UpdateUoMGroup(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['app']['App']['UpdateUoMGroup'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function UpdateUoMMaster(arg1, arg2) {
+  return window['go']['app']['App']['UpdateUoMMaster'](arg1, arg2);
 }
 
 export function UpdateUser(arg1) {

@@ -8,6 +8,7 @@ Modules.Purchasing = {
     // Detail / form views (no tab bar needed)
     if (active === 'purchases' && action === 'new')    { await loadNewPurchaseForm(); return; }
     if (active === 'purchases' && id)                  { await loadPurchaseDetail(id); return; }
+    if (active === 'delivery-receipts' && action === 'new') { await loadNewDRForm(); return; }
     if (active === 'delivery-receipts' && id)          { await loadDRDetail(id); return; }
     if (active === 'ap-invoices' && action === 'new')  { await loadNewAPInvoiceForm(); return; }
     if (active === 'ap-invoices' && id)                { await loadAPInvoiceDetail(id); return; }
@@ -65,15 +66,14 @@ Modules.Purchasing = {
 // ── Status Badge Helper ───────────────────────────────────────────────────────
 
 function purchStatusBadge(status) {
+  // status now represents delivery state of purchase orders
   const map = {
     Draft:     'secondary',
     Pending:   'warning',
-    Received:  'success',
-    Partial:   'info',
-    Paid:      'success',
+    Partial:   'warning',
+    Delivered: 'success',
     Cancelled: 'danger',
     Approved:  'primary',
-    Overdue:   'danger',
   };
   const color = map[status] || 'secondary';
   return `<span class="badge bg-${color}">${status || '—'}</span>`;
@@ -93,10 +93,10 @@ async function loadPurchasesList(tabBar) {
     : list.map(p => `
         <tr>
           <td class="fw-semibold">${p.po_number || '—'}</td>
-          <td>${formatDate(p.order_date)}</td>
-          <td>${p.supplier_name || '—'}</td>
-          <td>${formatCurrency(p.total_amount ?? 0)}</td>
-          <td>${purchStatusBadge(p.status)}</td>
+          <td>${formatDate(p.date)}</td>
+          <td>${p.supplier || '—'}</td>
+          <td>${formatCurrency(p.total_cost ?? 0)}</td>
+          <td>${purchStatusBadge(p.payment_status)}</td>
           <td class="text-end">
             <button class="btn btn-sm btn-outline-secondary" onclick="viewPurchase(${p.id})">
               <i class="bi bi-eye"></i>
@@ -141,9 +141,9 @@ async function loadDeliveryReceiptsList(tabBar) {
     : list.map(r => `
         <tr>
           <td class="fw-semibold">${r.dr_number || '—'}</td>
-          <td>${formatDate(r.delivery_date)}</td>
-          <td>${r.supplier_name || '—'}</td>
-          <td>${r.po_number || '—'}</td>
+          <td>${formatDate(r.date)}</td>
+          <td>${r.supplier || r.purchase?.supplier || r.purchase?.supplier_name || '—'}</td>
+          <td>${r.purchase?.po_number || r.purchase?.poNumber || ('PO-' + String(r.purchase_id).padStart(5,'0'))}</td>
           <td>${purchStatusBadge(r.status)}</td>
           <td class="text-end">
             <button class="btn btn-sm btn-outline-secondary" onclick="navigate('#/purchasing/delivery-receipts/${r.id}')">
@@ -154,6 +154,11 @@ async function loadDeliveryReceiptsList(tabBar) {
       `).join('');
 
   showView(wrapPurch(tabBar, `
+    <div class="d-flex justify-content-end mb-3">
+      <button class="btn btn-primary btn-sm" onclick="navigate('#/purchasing/delivery-receipts/new')">
+        <i class="bi bi-plus-lg me-1"></i>New Delivery Receipt
+      </button>
+    </div>
     <div class="card border-0 shadow-sm">
       <div class="table-responsive">
         <table class="table table-hover align-middle mb-0">
@@ -165,6 +170,166 @@ async function loadDeliveryReceiptsList(tabBar) {
       </div>
     </div>
   `));
+}
+
+// helpers for new delivery receipt form
+
+let _drPurchases = [];
+let _drSuppliers = [];
+
+// load both suppliers and purchases once, reuse for filtering
+async function loadDRData() {
+  if (_drPurchases.length === 0 || _drSuppliers.length === 0) {
+    const [suppliers, purchases] = await Promise.all([
+      api.ListSuppliers(true),
+      api.ListPurchases(),
+    ]);
+    _drSuppliers = suppliers || [];
+    _drPurchases = purchases || [];
+  }
+}
+
+function drSupplierSelected(el) {
+  const supId = parseInt(el.value);
+  const supName = el.options[el.selectedIndex]?.dataset.name || '';
+  const poSel = document.getElementById('drPoForSupplier');
+  const suppField = document.getElementById('drSupplier');
+  const poRefField = document.getElementById('drPORef');
+  // reset fields
+  if (poRefField) poRefField.value = '';
+  if (suppField) suppField.textContent = '';
+  if (!supId) {
+    if (poSel) poSel.style.display = 'none';
+    return;
+  }
+  // show supplier name
+  if (suppField) suppField.textContent = supName;
+  // filter purchases for this supplier and not delivered
+  const filtered = _drPurchases.filter(p => {
+    const matchesSupplier = (p.supplier_id === supId) || (p.supplier === supName);
+    const undeliv = p.payment_status !== 'Delivered';
+    return matchesSupplier && undeliv;
+  });
+  if (poSel) {
+    const opts = filtered.map(p =>
+      `<option value="${p.id}">${p.po_number || ('PO-' + String(p.id).padStart(5,'0'))} — ${formatDate(p.date)}</option>`
+    ).join('');
+    poSel.innerHTML = opts;
+    poSel.style.display = opts ? '' : 'none';
+  }
+}
+
+function drPoSelected(el) {
+  const poRefField = document.getElementById('drPORef');
+  if (!poRefField) return;
+  const ids = Array.from(el.selectedOptions).map(o => parseInt(o.value));
+  if (ids.length === 0) {
+    poRefField.value = '';
+    return;
+  }
+  const labels = ids.map(id => {
+    const p = _drPurchases.find(x => x.id === id) || {};
+    return p.po_number || ('PO-' + String(p.id).padStart(5,'0'));
+  });
+  poRefField.value = labels.join(', ');
+}
+
+async function loadNewDRForm() {
+  showLoading();
+  await loadDRData();
+  const today = new Date().toISOString().slice(0,10);
+  showView(`
+    <div class="container-fluid px-4 py-4" style="max-width:900px">
+      <div class="d-flex align-items-center gap-3 mb-4">
+        <button class="btn btn-sm btn-outline-secondary" onclick="navigate('#/purchasing/delivery-receipts')">
+          <i class="bi bi-arrow-left"></i> Back
+        </button>
+        <div>
+          <h4 class="mb-0 fw-bold"><i class="bi bi-truck me-2 text-success"></i>New Delivery Receipt</h4>
+          <div class="text-muted small">Record items received from a purchase order</div>
+        </div>
+      </div>
+
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">Supplier <span class="text-danger">*</span></label>
+              <select id="drSupplierSearch" class="form-select" onchange="drSupplierSelected(this)">
+                <option value="">— Select supplier —</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">Purchase Orders <span class="text-danger">*</span></label>
+              <select id="drPoForSupplier" class="form-select" onchange="drPoSelected(this)" style="display:none" multiple size="4">
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">DR Date <span class="text-danger">*</span></label>
+              <input type="date" id="drDate" class="form-control" value="${today}" required>
+            </div>
+            <div class="col-md-12">
+              <div class="small text-muted">Supplier</div>
+              <div id="drSupplier" class="fw-semibold">—</div>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label small fw-bold">PO Reference</label>
+              <input type="text" id="drPORef" class="form-control bg-light" disabled>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">DR Number</label>
+              <input type="text" id="drNumber" class="form-control" placeholder="Optional">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">Supplier DR Ref #</label>
+              <input type="text" id="drSupplierRef" class="form-control" placeholder="Optional">
+            </div>
+            <div class="col-md-12">
+              <label class="form-label small fw-bold">Notes</label>
+              <input type="text" id="drNotes" class="form-control" placeholder="Optional">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="d-flex justify-content-end gap-2">
+        <button class="btn btn-outline-secondary px-4" onclick="navigate('#/purchasing/delivery-receipts')">Cancel</button>
+        <button class="btn btn-success px-4" id="drSubmitBtn" onclick="submitNewDR()">Create DR</button>
+      </div>
+    </div>
+  `);
+  // populate supplier dropdown now that form is rendered
+  const supSel = document.getElementById('drSupplierSearch');
+  if (supSel) {
+    const opts = _drSuppliers.map(s =>
+      `<option value="${s.id}" data-name="${s.name}">${s.name}</option>`
+    ).join('');
+    supSel.innerHTML = `<option value="">— Select supplier —</option>` + opts;
+  }
+}
+
+async function submitNewDR() {
+  const poSelect = document.getElementById('drPoForSupplier');
+  const dateVal = document.getElementById('drDate').value;
+  const ids = Array.from(poSelect.selectedOptions).map(o => parseInt(o.value));
+  if (ids.length === 0) { toast('Please select at least one purchase order.', 'warning'); return; }
+  if (!dateVal) { toast('Delivery date is required.', 'warning'); return; }
+  const payload = {
+    purchase_ids: ids,
+    date: new Date(dateVal).toISOString(),
+    dr_number: document.getElementById('drNumber').value,
+    supplier_dr_ref: document.getElementById('drSupplierRef').value,
+    notes: document.getElementById('drNotes').value,
+  };
+  const btn = document.getElementById('drSubmitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating…';
+  const res = await api.CreateDeliveryReceipt(payload);
+  if (res) navigate('#/purchasing/delivery-receipts');
+  else {
+    btn.disabled = false;
+    btn.innerHTML = 'Create DR';
+  }
 }
 
 // ── AP Invoices ───────────────────────────────────────────────────────────────
@@ -181,7 +346,7 @@ async function loadApInvoicesList(tabBar) {
     : list.map(i => `
         <tr>
           <td class="fw-semibold">${i.invoice_number || '—'}</td>
-          <td>${formatDate(i.invoice_date)}</td>
+          <td>${formatDate(i.date)}</td>
           <td>${formatDate(i.due_date)}</td>
           <td>${i.supplier_name || '—'}</td>
           <td>${formatCurrency(i.total_amount ?? 0)}</td>
@@ -391,7 +556,11 @@ async function submitSupplierForm() {
 // ── New Purchase Order Form ───────────────────────────────────────────────────
 
 async function loadNewPurchaseForm() {
-  const suppliers = await api.ListSuppliers(true) || [];
+  const [suppliers, items] = await Promise.all([
+    api.ListSuppliers(true),
+    api.ListItemMasters(),
+  ]);
+  window._poItemMaster = items || [];
   const supplierOptions = suppliers.map(s =>
     `<option value="${s.id}" data-name="${s.name}">${s.name}</option>`
   ).join('');
@@ -399,153 +568,113 @@ async function loadNewPurchaseForm() {
   const today = new Date().toISOString().slice(0, 10);
 
   showView(`
-    <div class="container p-4" style="max-width:720px">
+    <div class="container p-4" style="max-width:960px">
       <div class="d-flex align-items-center gap-2 mb-4">
         <button class="btn btn-outline-secondary btn-sm" onclick="navigate('#/purchasing/purchases')">
           <i class="bi bi-arrow-left"></i>
         </button>
         <h4 class="fw-bold mb-0">New Purchase Order</h4>
       </div>
-      <div class="card border-0 shadow-sm">
+
+      <!-- Header -->
+      <div class="card border-0 shadow-sm mb-3">
         <div class="card-body">
-          <form id="newPurchaseForm">
-            <div class="row g-3">
-              <div class="col-md-6">
-                <label class="form-label">Date <span class="text-danger">*</span></label>
-                <input type="date" class="form-control" id="poDate" required value="${today}">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Supplier</label>
-                <select class="form-select" id="poSupplierID" onchange="poFillSupplierName()">
-                  <option value="">— Select supplier —</option>
-                  ${supplierOptions}
-                </select>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Supplier Name (snapshot)</label>
-                <input type="text" class="form-control" id="poSupplierName" placeholder="Auto-filled or type manually">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Category</label>
-                <select class="form-select" id="poCategory">
-                  <option value="">— Select —</option>
-                  <option>Feeds</option>
-                  <option>Medicine</option>
-                  <option>Supplies</option>
-                  <option>Equipment</option>
-                  <option>Other</option>
-                </select>
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Item Name <span class="text-danger">*</span></label>
-                <input type="text" class="form-control" id="poItemName" required placeholder="e.g. Layer Feeds 50kg">
-              </div>
-              <div class="col-md-3">
-                <label class="form-label">Quantity <span class="text-danger">*</span></label>
-                <input type="number" class="form-control" id="poQty" required min="0.001" step="0.001" placeholder="0"
-                  oninput="poCalcTotal()">
-              </div>
-              <div class="col-md-3">
-                <label class="form-label">Unit</label>
-                <input type="text" class="form-control" id="poUnit" placeholder="sacks, pcs, kg…">
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Unit Price</label>
-                <input type="number" class="form-control" id="poUnitPrice" min="0" step="0.01" placeholder="0.00"
-                  oninput="poCalcTotal()">
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Total Cost</label>
-                <input type="number" class="form-control" id="poTotalCost" min="0" step="0.01" placeholder="0.00" readonly>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Payment Method</label>
-                <select class="form-select" id="poPaymentMethod">
-                  <option>Cash</option>
-                  <option>Bank Transfer</option>
-                  <option>GCash</option>
-                  <option>Check</option>
-                  <option>Credit</option>
-                </select>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Payment Status</label>
-                <select class="form-select" id="poPaymentStatus">
-                  <option value="Unpaid">Unpaid</option>
-                  <option value="Paid" selected>Paid</option>
-                  <option value="Partial">Partial</option>
-                </select>
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Amount Paid</label>
-                <input type="number" class="form-control" id="poAmountPaid" min="0" step="0.01" placeholder="0.00">
-              </div>
-              <div class="col-md-4">
-                <label class="form-label">Received By</label>
-                <input type="text" class="form-control" id="poReceivedBy">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">PO Number</label>
-                <input type="text" class="form-control" id="poPONumber" placeholder="Auto or manual">
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Invoice Number</label>
-                <input type="text" class="form-control" id="poInvoiceNumber">
-              </div>
-              <div class="col-12">
-                <label class="form-label">Remarks</label>
-                <textarea class="form-control" id="poRemarks" rows="2"></textarea>
-              </div>
+          <div class="row g-3">
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">PO Number</label>
+              <input type="text" class="form-control" id="poPONumber" readonly placeholder="Auto">
             </div>
-            <div class="d-flex gap-2 mt-4">
-              <button type="submit" class="btn btn-primary px-4">
-                <i class="bi bi-check-lg me-1"></i>Save Purchase Order
-              </button>
-              <button type="button" class="btn btn-outline-secondary"
-                onclick="navigate('#/purchasing/purchases')">Cancel</button>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Date <span class="text-danger">*</span></label>
+              <input type="date" class="form-control" id="poDate" required value="${today}">
             </div>
-          </form>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">Supplier</label>
+              <select class="form-select" id="poSupplierID" onchange="poFillSupplierName()">
+                <option value="">— Select supplier —</option>
+                ${supplierOptions}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">Supplier Name (snapshot)</label>
+              <input type="text" class="form-control" id="poSupplierName" placeholder="Auto-filled or type manually">
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Payment Method</label>
+              <select class="form-select" id="poPaymentMethod">
+                <option>Cash</option>
+                <option>Bank Transfer</option>
+                <option>GCash</option>
+                <option>Check</option>
+                <option>Credit</option>
+              </select>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label small fw-bold">Remarks</label>
+              <textarea class="form-control" id="poRemarks" rows="2" placeholder="Optional"></textarea>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <!-- Line Items -->
+      <div class="card border-0 shadow-sm mb-3">
+        <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+          <span class="fw-bold"><i class="bi bi-box-seam me-2"></i>Line Items</span>
+          <button class="btn btn-sm btn-outline-primary" type="button" onclick="poAddLine()">
+            <i class="bi bi-plus-lg me-1"></i>Add Line
+          </button>
+        </div>
+        <div class="table-responsive">
+          <table class="table align-middle mb-0" id="poLinesTable">
+            <thead class="table-light">
+              <tr>
+                <th style="width:5%"></th>
+                <th style="width:20%">Category</th>
+                <th>Item</th>
+                <th style="width:10%" class="text-center">Unit</th>
+                <th style="width:12%" class="text-end">Qty</th>
+                <th style="width:15%" class="text-end">Unit Price</th>
+                <th style="width:15%" class="text-end">Line Total</th>
+              </tr>
+            </thead>
+            <tbody id="poLinesBody"></tbody>
+            <tfoot class="table-light fw-bold">
+              <tr>
+                <td colspan="6" class="text-end pe-3">PO Total</td>
+                <td class="text-end pe-3 text-primary fs-5" id="poGrandTotal">₱0.00</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="d-flex gap-2 mt-3 justify-content-end">
+        <button type="button" class="btn btn-outline-secondary"
+          onclick="navigate('#/purchasing/purchases')">Cancel</button>
+        <button type="button" class="btn btn-primary px-4" id="poSaveBtn" onclick="submitNewPO()">
+          <i class="bi bi-check-lg me-1"></i>Save Purchase Order
+        </button>
       </div>
     </div>
   `);
 
-  document.getElementById('newPurchaseForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const qty = parseFloat(document.getElementById('poQty').value) || 0;
-    const unitPrice = parseFloat(document.getElementById('poUnitPrice').value) || 0;
-    const totalCost = parseFloat(document.getElementById('poTotalCost').value) || (qty * unitPrice);
-    const supplierIDRaw = document.getElementById('poSupplierID').value;
-    const payload = {
-      date:           document.getElementById('poDate').value,
-      category:       document.getElementById('poCategory').value,
-      item_name:      document.getElementById('poItemName').value.trim(),
-      quantity:       qty,
-      unit:           document.getElementById('poUnit').value.trim(),
-      unit_price:     unitPrice,
-      total_cost:     totalCost,
-      supplier:       document.getElementById('poSupplierName').value.trim(),
-      supplier_id:    supplierIDRaw ? parseInt(supplierIDRaw, 10) : null,
-      po_number:      document.getElementById('poPONumber').value.trim(),
-      invoice_number: document.getElementById('poInvoiceNumber').value.trim(),
-      received_by:    document.getElementById('poReceivedBy').value.trim(),
-      payment_status: document.getElementById('poPaymentStatus').value,
-      amount_paid:    parseFloat(document.getElementById('poAmountPaid').value) || 0,
-      payment_method: document.getElementById('poPaymentMethod').value,
-      remarks:        document.getElementById('poRemarks').value.trim(),
-    };
-    const btn = e.target.querySelector('[type=submit]');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
-    const result = await api.CreatePurchase(payload);
-    if (result) {
-      toast('Purchase order saved.', 'success');
-      navigate('#/purchasing/purchases');
-    } else {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Purchase Order';
-    }
-  });
+  // datalist for item suggestions (shared)
+  if (!document.getElementById('poItemSuggestions')) {
+    const dl = document.createElement('datalist');
+    dl.id = 'poItemSuggestions';
+    document.body.appendChild(dl);
+  }
+
+  // Autopopulate PO number
+  const poField = document.getElementById('poPONumber');
+  if (poField) {
+    const next = await api.GetNextPONumber();
+    if (next) poField.value = next;
+  }
+
+  // Add one empty line by default
+  poAddLine();
 }
 
 function poFillSupplierName() {
@@ -556,10 +685,158 @@ function poFillSupplierName() {
   }
 }
 
-function poCalcTotal() {
-  const qty = parseFloat(document.getElementById('poQty').value) || 0;
-  const price = parseFloat(document.getElementById('poUnitPrice').value) || 0;
-  document.getElementById('poTotalCost').value = (qty * price).toFixed(2);
+function poAddLine() {
+  const tbody = document.getElementById('poLinesBody');
+  const row = document.createElement('tr');
+  row.className = 'po-line-row';
+  row.innerHTML = `
+    <td class="ps-3">
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="poRemoveLine(this)">
+        <i class="bi bi-x"></i>
+      </button>
+    </td>
+    <td>
+      <select class="form-select form-select-sm po-cat" onchange="poOnCategoryChange(this)">
+        <option value="">—</option>
+        <option>Feeds</option>
+        <option>Medicine</option>
+        <option>Supplies</option>
+        <option>Equipment</option>
+        <option>Other</option>
+      </select>
+    </td>
+    <td>
+      <input type="text" class="form-control form-control-sm po-item" placeholder="Item description"
+        oninput="poSuggestItem(this)" list="poItemSuggestions">
+    </td>
+    <td>
+      <input type="text" class="form-control form-control-sm text-center po-unit" placeholder="kg, sack…">
+    </td>
+    <td>
+      <input type="number" class="form-control form-control-sm text-end po-qty" min="0.001" step="0.001"
+        value="0" oninput="poRecalcLine(this)">
+    </td>
+    <td>
+      <input type="number" class="form-control form-control-sm text-end po-price" min="0" step="0.01"
+        value="0" oninput="poRecalcLine(this)">
+    </td>
+    <td class="text-end pe-3 fw-bold text-primary po-line-total">₱0.00</td>
+  `;
+  tbody.appendChild(row);
+}
+
+function poOnCategoryChange(sel) {
+  const row = sel.closest('tr');
+  const cat = sel.value;
+  const unitInput = row.querySelector('.po-unit');
+  const priceInput = row.querySelector('.po-price');
+  if (!window._poItemMaster) return;
+  const first = window._poItemMaster.find(i => i.category === cat);
+  if (first) {
+    if (unitInput && !unitInput.value) unitInput.value = first.unit || '';
+    if (priceInput && !parseFloat(priceInput.value)) priceInput.value = first.unit_price ?? 0;
+  }
+}
+
+function poSuggestItem(input) {
+  const cat = input.closest('tr').querySelector('.po-cat')?.value || '';
+  const term = input.value.toLowerCase();
+  const listEl = document.getElementById('poItemSuggestions');
+  if (!listEl || !window._poItemMaster) return;
+  if (!term) {
+    listEl.innerHTML = '';
+    return;
+  }
+
+  // First, try matches within the selected category (if any).
+  let matches = window._poItemMaster.filter(i => {
+    if (cat && i.category !== cat) return false;
+    return (i.name || '').toLowerCase().includes(term) || (i.item_code || '').toLowerCase().includes(term);
+  });
+
+  // If nothing matches within the category (or categories don't line up),
+  // fall back to searching all items so suggestions still appear.
+  if (matches.length === 0) {
+    matches = window._poItemMaster.filter(i =>
+      (i.name || '').toLowerCase().includes(term) || (i.item_code || '').toLowerCase().includes(term)
+    );
+  }
+
+  matches = matches.slice(0, 10);
+  listEl.innerHTML = matches.map(i =>
+    `<option value="${i.name}" data-code="${i.item_code}" data-unit="${i.unit}" data-price="${i.unit_price}">`
+  ).join('');
+}
+
+function poRemoveLine(btn) {
+  const row = btn.closest('tr');
+  row?.remove();
+  poRecalcGrandTotal();
+}
+
+function poRecalcLine(input) {
+  const row = input.closest('tr');
+  const qty = parseFloat(row.querySelector('.po-qty').value) || 0;
+  const price = parseFloat(row.querySelector('.po-price').value) || 0;
+  const total = qty * price;
+  row.querySelector('.po-line-total').textContent = formatCurrency(total);
+  poRecalcGrandTotal();
+}
+
+function poRecalcGrandTotal() {
+  let grand = 0;
+  document.querySelectorAll('.po-line-row').forEach(row => {
+    const qty = parseFloat(row.querySelector('.po-qty').value) || 0;
+    const price = parseFloat(row.querySelector('.po-price').value) || 0;
+    grand += qty * price;
+  });
+  const el = document.getElementById('poGrandTotal');
+  if (el) el.textContent = formatCurrency(grand);
+}
+
+async function submitNewPO() {
+  const dateVal = document.getElementById('poDate').value;
+  if (!dateVal) { toast('Date is required.', 'warning'); return; }
+
+  const rows = Array.from(document.querySelectorAll('.po-line-row'));
+  const lines = [];
+  rows.forEach(row => {
+    const item = row.querySelector('.po-item').value.trim();
+    const qty = parseFloat(row.querySelector('.po-qty').value) || 0;
+    const price = parseFloat(row.querySelector('.po-price').value) || 0;
+    if (!item || qty <= 0) return;
+    lines.push({
+      category:  row.querySelector('.po-cat').value,
+      item_name: item,
+      unit:      row.querySelector('.po-unit').value.trim(),
+      quantity:  qty,
+      unit_price: price,
+    });
+  });
+
+  if (lines.length === 0) { toast('Add at least one line item.', 'warning'); return; }
+
+  const supplierIDRaw = document.getElementById('poSupplierID').value;
+  const payload = {
+    date:           new Date(dateVal).toISOString(),
+    supplier_id:    supplierIDRaw ? parseInt(supplierIDRaw, 10) : null,
+    supplier:       document.getElementById('poSupplierName').value.trim(),
+    payment_method: document.getElementById('poPaymentMethod').value,
+    remarks:        document.getElementById('poRemarks').value.trim(),
+    po_number:      document.getElementById('poPONumber').value.trim(),
+    lines,
+  };
+
+  const btn = document.getElementById('poSaveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving…';
+  const result = await api.CreatePurchaseHeader(payload);
+  if (result) {
+    navigate('#/purchasing/purchases');
+  } else {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Purchase Order';
+  }
 }
 
 // ── Purchase Detail View ──────────────────────────────────────────────────────
@@ -1316,7 +1593,8 @@ async function submitNewAPInvoice() {
   if (items.length === 0) { toast('No items selected.', 'warning'); return; }
 
   const po      = _apInvPurchases.find(p => p.id === poId) || {};
-  const dueDate = document.getElementById('apDueDate').value || null;
+  const dueDateVal = document.getElementById('apDueDate').value;
+  const dueDate = dueDateVal ? new Date(dueDateVal).toISOString() : null;
 
   const btn = document.getElementById('apSubmitBtn');
   btn.disabled = true;
@@ -1325,7 +1603,7 @@ async function submitNewAPInvoice() {
   const result = await api.CreateAPInvoice({
     purchase_id:      poId,
     dr_id:            drId,
-    date:             document.getElementById('apDate').value,
+    date:             new Date(document.getElementById('apDate').value).toISOString(),
     terms:            document.getElementById('apTerms').value,
     supplier_name:    document.getElementById('apSupplierName').value,
     supplier_inv_ref: document.getElementById('apSupplierInvRef').value,
@@ -1738,7 +2016,7 @@ async function submitAPPayment() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting…';
 
   const result = await api.CreateAPPayment({
-    date:           document.getElementById('apPayDate').value,
+    date:           new Date(document.getElementById('apPayDate').value).toISOString(),
     supplier_id:    suppId,
     supplier_name:  suppName,
     payment_method: document.getElementById('apPayMethod').value,

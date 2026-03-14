@@ -53,7 +53,7 @@ type PriceGroupItem struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-func (PriceGroupItem) TableName() string { return "price_group_item" }
+func (PriceGroupItem) TableName() string { return "pg_line" }
 
 type SalesOrder struct {
 	ID                      uint      `gorm:"primaryKey" json:"id"`
@@ -94,7 +94,7 @@ type SalesOrderItem struct {
 	LineTotal    float64 `gorm:"type:decimal(15,4);not null" json:"line_total"`
 }
 
-func (SalesOrderItem) TableName() string { return "sales_order_item" }
+func (SalesOrderItem) TableName() string { return "so_line" }
 
 type DeliveryOrder struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
@@ -134,7 +134,7 @@ type DeliveryOrderItem struct {
 	PricePerUnit     float64 `gorm:"type:decimal(15,4);default:0" json:"price_per_unit"`
 }
 
-func (DeliveryOrderItem) TableName() string { return "delivery_order_item" }
+func (DeliveryOrderItem) TableName() string { return "do_line" }
 
 func (i *DeliveryOrderItem) LineTotal() float64 {
 	return i.QuantityDelivered * i.PricePerUnit
@@ -185,7 +185,7 @@ type ARInvoiceItem struct {
 	PricePerUnit float64 `gorm:"type:decimal(15,4);not null" json:"price_per_unit"`
 }
 
-func (ARInvoiceItem) TableName() string { return "ar_invoice_item" }
+func (ARInvoiceItem) TableName() string { return "ar_invoice_line" }
 
 func (i *ARInvoiceItem) LineTotal() float64 {
 	return i.Quantity * i.PricePerUnit

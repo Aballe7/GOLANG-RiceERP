@@ -121,4 +121,4 @@ type JournalEntryLine struct {
 	GLAccount *GLAccount `gorm:"foreignKey:GLAccountID" json:"gl_account,omitempty"`
 }
 
-func (JournalEntryLine) TableName() string { return "journal_entry_line" }
+func (JournalEntryLine) TableName() string { return "je_line" }

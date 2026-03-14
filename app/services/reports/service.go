@@ -38,7 +38,7 @@ func GetPnL(startDate, endDate string) (*PnLReport, error) {
 	query := `
 		SELECT ga.code, ga.name, ga.section,
 		       COALESCE(SUM(jel.credit), 0) - COALESCE(SUM(jel.debit), 0) AS total
-		FROM journal_entry_line jel
+	FROM je_line jel
 		JOIN journal_entry je ON je.id = jel.journal_entry_id
 		JOIN gl_account ga ON ga.id = jel.gl_account_id
 		WHERE je.status = 'POSTED'
@@ -110,7 +110,7 @@ func GetBalanceSheet(asOf string) (*BalanceSheet, error) {
 	query := `
 		SELECT ga.code, ga.name, ga.section, ga.normal_balance,
 		       COALESCE(SUM(jel.debit), 0) - COALESCE(SUM(jel.credit), 0) AS total
-		FROM journal_entry_line jel
+	FROM je_line jel
 		JOIN journal_entry je ON je.id = jel.journal_entry_id
 		JOIN gl_account ga ON ga.id = jel.gl_account_id
 		WHERE je.status = 'POSTED'

@@ -330,7 +330,7 @@ export namespace handlers {
 		}
 	}
 	export class CreateDeliveryReceiptRequest {
-	    purchase_id: number;
+	    purchase_ids: number[];
 	    date: string;
 	    received_by: string;
 	    supplier_dr_ref: string;
@@ -343,7 +343,7 @@ export namespace handlers {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.purchase_id = source["purchase_id"];
+	        this.purchase_ids = source["purchase_ids"];
 	        this.date = source["date"];
 	        this.received_by = source["received_by"];
 	        this.supplier_dr_ref = source["supplier_dr_ref"];
@@ -628,6 +628,63 @@ export namespace handlers {
 	        this.unit = source["unit"];
 	        this.price = source["price"];
 	    }
+	}
+
+}
+
+export namespace inventory {
+	
+	export class UoMGroupLineInput {
+	    uom_entry: number;
+	    alt_qty: number;
+	    base_qty: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UoMGroupLineInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uom_entry = source["uom_entry"];
+	        this.alt_qty = source["alt_qty"];
+	        this.base_qty = source["base_qty"];
+	    }
+	}
+	export class CreateUoMGroupRequest {
+	    ugp_code: string;
+	    ugp_name: string;
+	    base_uom: number;
+	    lines: UoMGroupLineInput[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CreateUoMGroupRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ugp_code = source["ugp_code"];
+	        this.ugp_name = source["ugp_name"];
+	        this.base_uom = source["base_uom"];
+	        this.lines = this.convertValues(source["lines"], UoMGroupLineInput);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -1618,6 +1675,45 @@ export namespace models {
 	
 	
 	
+	
+	export class UoMMaster {
+	    uom_entry: number;
+	    uom_code: string;
+	    uom_name: string;
+	    length: number;
+	    l_type: number;
+	    width: number;
+	    w_type: number;
+	    height: number;
+	    h_type: number;
+	    volume: number;
+	    v_type: number;
+	    weight: number;
+	    wgt_type: number;
+	    user_sign: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new UoMMaster(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uom_entry = source["uom_entry"];
+	        this.uom_code = source["uom_code"];
+	        this.uom_name = source["uom_name"];
+	        this.length = source["length"];
+	        this.l_type = source["l_type"];
+	        this.width = source["width"];
+	        this.w_type = source["w_type"];
+	        this.height = source["height"];
+	        this.h_type = source["h_type"];
+	        this.volume = source["volume"];
+	        this.v_type = source["v_type"];
+	        this.weight = source["weight"];
+	        this.wgt_type = source["wgt_type"];
+	        this.user_sign = source["user_sign"];
+	    }
+	}
 
 }
 
@@ -1711,6 +1807,68 @@ export namespace purchasing {
 	        this.ap_invoice_id = source["ap_invoice_id"];
 	        this.amount_applied = source["amount_applied"];
 	    }
+	}
+	export class POLineInput {
+	    category: string;
+	    item_name: string;
+	    unit: string;
+	    quantity: number;
+	    unit_price: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new POLineInput(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.category = source["category"];
+	        this.item_name = source["item_name"];
+	        this.unit = source["unit"];
+	        this.quantity = source["quantity"];
+	        this.unit_price = source["unit_price"];
+	    }
+	}
+	export class CreatePurchaseParams {
+	    date: string;
+	    supplier_id?: number;
+	    supplier: string;
+	    payment_method: string;
+	    remarks: string;
+	    po_number: string;
+	    lines: POLineInput[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CreatePurchaseParams(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.date = source["date"];
+	        this.supplier_id = source["supplier_id"];
+	        this.supplier = source["supplier"];
+	        this.payment_method = source["payment_method"];
+	        this.remarks = source["remarks"];
+	        this.po_number = source["po_number"];
+	        this.lines = this.convertValues(source["lines"], POLineInput);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

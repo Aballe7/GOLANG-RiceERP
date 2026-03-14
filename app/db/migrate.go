@@ -32,12 +32,17 @@ func AutoMigrateAll() error {
 		&models.Inventory{},
 		&models.ItemCategory{},
 		&models.ItemMaster{},
+		&models.UoMMaster{},
+		&models.UoMGroup{},
+		&models.UoMGroupLine{},
 
 		// Purchasing
 		&models.Supplier{},
 		&models.Purchase{},
 		&models.DeliveryReceipt{},
 		&models.DeliveryReceiptItem{},
+		&models.PurchaseHeader{},
+		&models.PurchaseLine{},
 		&models.APInvoice{},
 		&models.APInvoiceItem{},
 		&models.APPayment{},
@@ -125,20 +130,42 @@ func PreMigrateFixup() error {
 // RunColumnMigrations handles column renames that GORM AutoMigrate cannot do automatically.
 func RunColumnMigrations() error {
 	// sales_order.invoice_number → sales_order_number
-	// AutoMigrate may have already added the new column; handle both cases.
 	var oldExists, newExists int64
 	DB.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sales_order' AND column_name = 'invoice_number'").Scan(&oldExists)
 	DB.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'sales_order' AND column_name = 'sales_order_number'").Scan(&newExists)
 
 	if oldExists > 0 && newExists > 0 {
-		// Both columns exist: drop the old one (AutoMigrate already created the new one)
 		if err := DB.Exec("ALTER TABLE sales_order DROP COLUMN invoice_number").Error; err != nil {
 			return fmt.Errorf("drop sales_order.invoice_number: %w", err)
 		}
 	} else if oldExists > 0 && newExists == 0 {
-		// Only old column exists: rename it
 		if err := DB.Exec("ALTER TABLE sales_order RENAME COLUMN invoice_number TO sales_order_number").Error; err != nil {
 			return fmt.Errorf("rename sales_order.invoice_number: %w", err)
+		}
+	}
+
+	// Table renames for line tables
+	type tblState struct {
+		Old string
+		New string
+	}
+	for _, pair := range []tblState{
+		{"sales_order_item", "so_line"},
+		{"journal_entry_line", "je_line"},
+		{"delivery_order_item", "do_line"},
+		{"delivery_receipt_item", "dr_line"},
+		{"price_group_item", "pg_line"},
+		{"ar_invoice_item", "ar_invoice_line"},
+		{"ap_invoice_item", "ap_invoice_line"},
+	} {
+		var oldCnt, newCnt int64
+		DB.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", pair.Old).Scan(&oldCnt)
+		DB.Raw("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", pair.New).Scan(&newCnt)
+		if oldCnt > 0 && newCnt == 0 {
+			sql := fmt.Sprintf("RENAME TABLE %s TO %s", pair.Old, pair.New)
+			if err := DB.Exec(sql).Error; err != nil {
+				return fmt.Errorf("rename table %s → %s: %w", pair.Old, pair.New, err)
+			}
 		}
 	}
 	return nil

@@ -1,8 +1,9 @@
 package handlers
 
 import (
-	"egglayererp/app/middleware"
 	appconfig "egglayererp/app/config"
+	"egglayererp/app/middleware"
+	"egglayererp/app/services/audit"
 	"egglayererp/app/services/backup"
 )
 
@@ -25,6 +26,7 @@ func CreateBackup() Response {
 	if err != nil {
 		return errResponse(err)
 	}
+	audit.Log("CREATE", "Backup", "Backup", bf.FileName, "Database backup created: "+bf.FileName, nil)
 	return okResponse("Backup created successfully", bf)
 }
 
@@ -48,5 +50,6 @@ func DeleteBackup(name string) Response {
 	if err := backup.DeleteBackup(name); err != nil {
 		return errResponse(err)
 	}
+	audit.Log("DELETE", "Backup", "Backup", name, "Database backup deleted: "+name, nil)
 	return okResponse("Backup deleted", nil)
 }

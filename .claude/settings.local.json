@@ -16,7 +16,25 @@
       "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./app/... ./cmd/... 2>&1)",
       "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && go build ./app/services/reports/... 2>&1)",
       "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && node --check frontend/js/modules/reports.js 2>&1)",
-      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && for f in frontend/js/modules/*.js frontend/js/app.js frontend/js/api.js; do node --check \"$f\" 2>&1 && echo \"OK: $f\" || echo \"FAIL: $f\"; done)"
+      "Bash(cd \"C:/Users/Ian Aballe/EggLayerERP-Go\" && for f in frontend/js/modules/*.js frontend/js/app.js frontend/js/api.js; do node --check \"$f\" 2>&1 && echo \"OK: $f\" || echo \"FAIL: $f\"; done)",
+      "Bash(mysql -u egglayer -pegglayer123 egg_layer_erp -e \":*)",
+      "Bash(go run:*)",
+      "Bash(head -20 grep -n \"CreatedAt\\\\|gorm.Model\\\\|UpdatedAt\" \"C:/Users/Ian Aballe/EggLayerERP-Go/app/models/operations.go\")",
+      "Bash(head -10 grep -n \"CreatedAt\\\\|gorm.Model\" \"C:/Users/Ian Aballe/EggLayerERP-Go/app/models/purchasing.go\")",
+      "Bash(go build:*)",
+      "Bash(powershell.exe -Command \"Test-Path ''C:\\\\Program Files\\\\MySQL\\\\MySQL Server 9.6\\\\bin\\\\mysqldump.exe''\")",
+      "Bash(grep -n \"AuditLog\" app/models/*.go)",
+      "Bash(powershell.exe -Command \":*)",
+      "Bash(powershell.exe -Command \"Remove-Item \"\"$env:USERPROFILE\\\\EggLayerERP\\\\backups\\\\test_backup*.sql\"\" -ErrorAction SilentlyContinue; Get-ChildItem \"\"$env:USERPROFILE\\\\EggLayerERP\\\\backups\"\"\")",
+      "Bash(powershell.exe -Command \"Get-Process wails -ErrorAction SilentlyContinue | Stop-Process -Force; Get-Process ''EggLayerERP-Go'' -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem ''$env:USERPROFILE\\\\EggLayerERP\\\\backups\\\\'' | Sort-Object LastWriteTime -Descending | Select-Object Name, Length, LastWriteTime\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem \"\"$env:USERPROFILE\\\\EggLayerERP\\\\backups\"\" | Sort-Object LastWriteTime -Descending | Select-Object Name, Length, LastWriteTime\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\Ian Aballe\\\\EggLayerERP\\\\backups'' | Sort-Object LastWriteTime -Descending | Select-Object Name, Length, LastWriteTime\")",
+      "Bash(python create_item_master.py)",
+      "Bash(pip install:*)",
+      "Bash(python -m pip install openpyxl)",
+      "Bash(python scripts/recalc.py \"C:\\\\Users\\\\Ian Aballe\\\\Downloads\\\\item_master_seed.xlsx\")",
+      "Bash(python -c \":*)"
     ]
   }
 }

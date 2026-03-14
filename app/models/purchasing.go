@@ -35,7 +35,7 @@ type Purchase struct {
 	PONumber       string    `gorm:"type:varchar(50)" json:"po_number"`
 	InvoiceNumber  string    `gorm:"type:varchar(50)" json:"invoice_number"`
 	ReceivedBy     string    `gorm:"type:varchar(100)" json:"received_by"`
-	PaymentStatus  string    `gorm:"type:varchar(20);default:'Paid'" json:"payment_status"`
+	PaymentStatus  string    `gorm:"type:varchar(20);default:'Undelivered'" json:"payment_status"`
 	AmountPaid     float64   `gorm:"type:decimal(15,4);default:0" json:"amount_paid"`
 	PaymentMethod  string    `gorm:"type:varchar(20);default:'Cash'" json:"payment_method"`
 	Remarks        string    `gorm:"type:text" json:"remarks"`
@@ -83,7 +83,7 @@ type DeliveryReceiptItem struct {
 	UnitPrice         float64 `gorm:"type:decimal(15,4);default:0" json:"unit_price"`
 }
 
-func (DeliveryReceiptItem) TableName() string { return "delivery_receipt_item" }
+func (DeliveryReceiptItem) TableName() string { return "dr_line" }
 
 func (i *DeliveryReceiptItem) LineTotal() float64 {
 	return i.QuantityReceived * i.UnitPrice
@@ -132,7 +132,7 @@ type APInvoiceItem struct {
 	UnitPrice   float64 `gorm:"type:decimal(15,4);not null" json:"unit_price"`
 }
 
-func (APInvoiceItem) TableName() string { return "ap_invoice_item" }
+func (APInvoiceItem) TableName() string { return "ap_invoice_line" }
 
 func (i *APInvoiceItem) LineTotal() float64 {
 	return i.Quantity * i.UnitPrice
@@ -168,3 +168,61 @@ type APPaymentLine struct {
 }
 
 func (APPaymentLine) TableName() string { return "ap_payment_line" }
+
+// PurchaseHeader represents the purchasing document header (similar to SAP B1 OPCH).
+// It is intentionally more generic than the legacy Purchase table and is meant
+// to support multiple line items per PO and multi-PO delivery receipts.
+type PurchaseHeader struct {
+	ID uint `gorm:"primaryKey" json:"id"` // DocEntry
+
+	PONumber string `gorm:"type:varchar(50)" json:"po_number"` // PO-000-00000
+
+	DocNum int    `gorm:"type:int" json:"doc_num"`                 // DocNum
+	Status string `gorm:"type:varchar(1);default:'O'" json:"status"` // O (Open), C (Closed)
+
+	SupplierID   *uint  `json:"supplier_id"`                         // CardCode reference
+	SupplierCode string `gorm:"type:varchar(15)" json:"supplier_code"` // CardCode
+	SupplierName string `gorm:"type:varchar(100)" json:"supplier_name"` // CardName
+
+	PostingDate  time.Time  `gorm:"type:date;not null" json:"posting_date"` // DocDate
+	DeliveryDate *time.Time `gorm:"type:date" json:"delivery_date"`         // DocDueDate
+	TaxDate      *time.Time `gorm:"type:date" json:"tax_date"`              // TaxDate
+
+	RefNumber string `gorm:"type:varchar(100)" json:"ref_number"` // NumAtCard (BP reference)
+	Currency  string `gorm:"type:varchar(3)" json:"currency"`     // DocCur
+
+	DocTotal float64 `gorm:"type:decimal(15,4);default:0" json:"doc_total"` // DocTotal (incl. tax)
+	VatSum   float64 `gorm:"type:decimal(15,4);default:0" json:"vat_sum"`   // VatSum
+
+	Comments string `gorm:"type:varchar(254)" json:"comments"` // Remarks / comments
+
+	// Relationships
+	Lines []PurchaseLine `gorm:"foreignKey:HeaderID" json:"lines,omitempty"`
+}
+
+func (PurchaseHeader) TableName() string { return "purchase_header" }
+
+// PurchaseLine represents a single line item on a purchase document header.
+type PurchaseLine struct {
+	ID       uint `gorm:"primaryKey" json:"id"`
+	HeaderID uint `gorm:"not null;index" json:"header_id"` // Foreign key to PurchaseHeader (DocEntry)
+
+	LineNum int `gorm:"type:int" json:"line_num"` // Row index
+
+	ItemCode    string  `gorm:"type:varchar(30)" json:"item_code"`
+	Description string  `gorm:"type:varchar(100)" json:"description"`
+	Quantity    float64 `gorm:"type:decimal(12,3);default:0" json:"quantity"`
+	OpenQty     float64 `gorm:"type:decimal(12,3);default:0" json:"open_qty"` // remaining qty to receive
+	Price       float64 `gorm:"type:decimal(15,4);default:0" json:"price"`    // unit price after discount
+	LineTotal   float64 `gorm:"type:decimal(15,4);default:0" json:"line_total"`
+
+	WarehouseCode string `gorm:"type:varchar(8)" json:"warehouse_code"` // WhsCode
+	AccountCode   string `gorm:"type:varchar(15)" json:"account_code"`  // AcctCode (G/L)
+	TaxCode       string `gorm:"type:varchar(8)" json:"tax_code"`       // VatGroup
+
+	ProjectCode  string `gorm:"type:varchar(20)" json:"project_code"`   // Project
+	CostCenter   string `gorm:"type:varchar(8)" json:"cost_center"`     // OcrCode
+	LineStatus   string `gorm:"type:varchar(1);default:'O'" json:"line_status"` // O (Open), C (Closed)
+}
+
+func (PurchaseLine) TableName() string { return "purchase_line" }

@@ -12,9 +12,12 @@ import (
 	"egglayererp/app/handlers"
 	"egglayererp/app/middleware"
 	"egglayererp/app/models"
+	auditsvc "egglayererp/app/services/audit"
 	backupsvc "egglayererp/app/services/backup"
 	flockssvc "egglayererp/app/services/flocks"
 	opssvc "egglayererp/app/services/operations"
+	purchasingsvc "egglayererp/app/services/purchasing"
+	invsvc "egglayererp/app/services/inventory"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -353,6 +356,30 @@ func (a *App) UpdateItemMaster(id uint, updates map[string]interface{}) handlers
 }
 func (a *App) DeleteItemMaster(id uint) handlers.Response { return handlers.DeleteItemMaster(id) }
 
+// ─────────────────────── UoM Master (OUOM) ──────────────────────────────────
+
+func (a *App) ListUoMMasters() handlers.Response { return handlers.ListUoMMasters() }
+func (a *App) GetUoMMaster(entry uint) handlers.Response { return handlers.GetUoMMaster(entry) }
+func (a *App) CreateUoMMaster(item models.UoMMaster) handlers.Response {
+	return handlers.CreateUoMMaster(item)
+}
+func (a *App) UpdateUoMMaster(entry uint, updates map[string]interface{}) handlers.Response {
+	return handlers.UpdateUoMMaster(entry, updates)
+}
+func (a *App) DeleteUoMMaster(entry uint) handlers.Response { return handlers.DeleteUoMMaster(entry) }
+
+// ─────────────────────── UoM Groups (OUGP) ──────────────────────────────────
+
+func (a *App) ListUoMGroups() handlers.Response { return handlers.ListUoMGroups() }
+func (a *App) GetUoMGroup(entry uint) handlers.Response { return handlers.GetUoMGroup(entry) }
+func (a *App) CreateUoMGroup(req invsvc.CreateUoMGroupRequest) handlers.Response {
+	return handlers.CreateUoMGroup(req)
+}
+func (a *App) UpdateUoMGroup(entry uint, ugpCode, ugpName string, baseUom int, lines []invsvc.UoMGroupLineInput) handlers.Response {
+	return handlers.UpdateUoMGroup(entry, ugpCode, ugpName, baseUom, lines)
+}
+func (a *App) DeleteUoMGroup(entry uint) handlers.Response { return handlers.DeleteUoMGroup(entry) }
+
 // ─────────────────────── Purchasing ─────────────────────────────────────────
 
 func (a *App) ListSuppliers(activeOnly bool) handlers.Response  { return handlers.ListSuppliers(activeOnly) }
@@ -369,6 +396,11 @@ func (a *App) CreatePurchase(p models.Purchase) handlers.Response { return handl
 func (a *App) UpdatePurchase(id uint, updates map[string]interface{}) handlers.Response {
 	return handlers.UpdatePurchase(id, updates)
 }
+
+func (a *App) CreatePurchaseHeader(req purchasingsvc.CreatePurchaseParams) handlers.Response {
+	return handlers.CreatePurchaseHeader(req)
+}
+func (a *App) GetNextPONumber() handlers.Response { return handlers.GetNextPONumber() }
 
 func (a *App) CreateDeliveryReceipt(req handlers.CreateDeliveryReceiptRequest) handlers.Response {
 	return handlers.CreateDeliveryReceipt(req)
@@ -514,6 +546,7 @@ func (a *App) CreateBackup() handlers.Response {
 	if err != nil {
 		return handlers.Response{OK: false, Message: err.Error()}
 	}
+	auditsvc.Log("CREATE", "Backup", "Backup", bf.FileName, "Database backup created: "+bf.FileName, nil)
 	return handlers.OkResponse("Backup created successfully", bf)
 }
 
@@ -582,6 +615,7 @@ func (a *App) DownloadBackup(name string) handlers.Response {
 	if err := copyFile(srcPath, destPath); err != nil {
 		return handlers.Response{OK: false, Message: "Copy failed: " + err.Error()}
 	}
+	auditsvc.Log("EXPORT", "Backup", "Backup", name, "Database backup exported: "+name+" → "+destPath, nil)
 	return handlers.OkResponse("Backup saved to "+destPath, nil)
 }
 

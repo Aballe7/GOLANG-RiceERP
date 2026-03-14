@@ -3,6 +3,8 @@
 import {handlers} from '../models';
 import {models} from '../models';
 import {flocks} from '../models';
+import {purchasing} from '../models';
+import {inventory} from '../models';
 import {operations} from '../models';
 
 export function AddBodyWeightLog(arg1:number,arg2:string,arg3:number,arg4:number,arg5:number,arg6:string):Promise<handlers.Response>;
@@ -49,9 +51,15 @@ export function CreatePriceGroup(arg1:models.PriceGroup):Promise<handlers.Respon
 
 export function CreatePurchase(arg1:models.Purchase):Promise<handlers.Response>;
 
+export function CreatePurchaseHeader(arg1:purchasing.CreatePurchaseParams):Promise<handlers.Response>;
+
 export function CreateSalesOrder(arg1:handlers.CreateSalesOrderRequest):Promise<handlers.Response>;
 
 export function CreateSupplier(arg1:models.Supplier):Promise<handlers.Response>;
+
+export function CreateUoMGroup(arg1:inventory.CreateUoMGroupRequest):Promise<handlers.Response>;
+
+export function CreateUoMMaster(arg1:models.UoMMaster):Promise<handlers.Response>;
 
 export function CreateUser(arg1:handlers.CreateUserRequest):Promise<handlers.Response>;
 
@@ -74,6 +82,10 @@ export function DeleteItemMaster(arg1:number):Promise<handlers.Response>;
 export function DeletePriceGroup(arg1:number):Promise<handlers.Response>;
 
 export function DeleteSupplier(arg1:number):Promise<handlers.Response>;
+
+export function DeleteUoMGroup(arg1:number):Promise<handlers.Response>;
+
+export function DeleteUoMMaster(arg1:number):Promise<handlers.Response>;
 
 export function DeleteUser(arg1:number):Promise<handlers.Response>;
 
@@ -137,6 +149,8 @@ export function GetJournalEntry(arg1:number):Promise<handlers.Response>;
 
 export function GetLayerHouses():Promise<handlers.Response>;
 
+export function GetNextPONumber():Promise<handlers.Response>;
+
 export function GetPnL(arg1:string,arg2:string):Promise<handlers.Response>;
 
 export function GetPostingEvents():Promise<handlers.Response>;
@@ -148,6 +162,10 @@ export function GetPurchase(arg1:number):Promise<handlers.Response>;
 export function GetSalesOrder(arg1:number):Promise<handlers.Response>;
 
 export function GetSupplier(arg1:number):Promise<handlers.Response>;
+
+export function GetUoMGroup(arg1:number):Promise<handlers.Response>;
+
+export function GetUoMMaster(arg1:number):Promise<handlers.Response>;
 
 export function ListAPInvoices(arg1:any,arg2:string):Promise<handlers.Response>;
 
@@ -186,6 +204,10 @@ export function ListPurchases():Promise<handlers.Response>;
 export function ListSalesOrders():Promise<handlers.Response>;
 
 export function ListSuppliers(arg1:boolean):Promise<handlers.Response>;
+
+export function ListUoMGroups():Promise<handlers.Response>;
+
+export function ListUoMMasters():Promise<handlers.Response>;
 
 export function ListUsers():Promise<handlers.Response>;
 
@@ -236,6 +258,10 @@ export function UpdatePriceGroup(arg1:number,arg2:Record<string, any>):Promise<h
 export function UpdatePurchase(arg1:number,arg2:Record<string, any>):Promise<handlers.Response>;
 
 export function UpdateSupplier(arg1:number,arg2:Record<string, any>):Promise<handlers.Response>;
+
+export function UpdateUoMGroup(arg1:number,arg2:string,arg3:string,arg4:number,arg5:Array<inventory.UoMGroupLineInput>):Promise<handlers.Response>;
+
+export function UpdateUoMMaster(arg1:number,arg2:Record<string, any>):Promise<handlers.Response>;
 
 export function UpdateUser(arg1:handlers.UpdateUserRequest):Promise<handlers.Response>;
 

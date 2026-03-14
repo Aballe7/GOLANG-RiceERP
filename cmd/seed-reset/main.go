@@ -22,20 +22,20 @@ func main() {
 
 	tables := []string{
 		"collection_line", "collection",
-		"ar_invoice_item", "ar_invoice",
-		"delivery_order_item", "delivery_order",
-		"sales_order_item", "sales_order",
+		"ar_invoice_line", "ar_invoice",
+		"do_line", "delivery_order",
+		"so_line", "sales_order",
 		"ap_payment_line", "ap_payment",
-		"ap_invoice_item", "ap_invoice",
-		"delivery_receipt_item", "delivery_receipt",
+		"ap_invoice_line", "ap_invoice",
+		"dr_line", "delivery_receipt",
 		"purchase",
 		"body_weight_log", "grower_log", "daily_log", "flock",
 		"feed_stock",
 		"item_master", "item_categories",
-		"price_group_item", "customer", "price_group",
+		"pg_line", "customer", "price_group",
 		"supplier",
 		"account_determination", "payment_method_account",
-		"journal_entry_line", "journal_entry",
+		"je_line", "journal_entry",
 	}
 
 	for _, t := range tables {

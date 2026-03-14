@@ -1488,7 +1488,7 @@ async function submitNewDO(soId) {
 
   const result = await api.CreateDeliveryOrder({
     sales_order_id: soId,
-    date:           document.getElementById('doDate').value,
+    date:           new Date(document.getElementById('doDate').value).toISOString(),
     delivered_by:   document.getElementById('doDeliveredBy').value,
     notes:          document.getElementById('doNotes').value,
     items,
@@ -1876,7 +1876,8 @@ async function submitNewARInvoice() {
 
   const so = _arInvSOList.find(o => o.id === soId) || {};
   const custName = so.customer_name_snapshot || 'Walk-in';
-  const dueDate = document.getElementById('arDueDate').value || null;
+  const dueDateVal = document.getElementById('arDueDate').value;
+  const dueDate = dueDateVal ? new Date(dueDateVal).toISOString() : null;
 
   const btn = document.getElementById('arSubmitBtn');
   btn.disabled = true;
@@ -1889,7 +1890,7 @@ async function submitNewARInvoice() {
     customer_name:     custName,
     customer_addr:     so.customer_address_snapshot || '',
     customer_contact:  so.customer_contact_snapshot || '',
-    date:              document.getElementById('arDate').value,
+    date:              new Date(document.getElementById('arDate').value).toISOString(),
     terms:             document.getElementById('arTerms').value,
     notes:             document.getElementById('arNotes').value,
     due_date:          dueDate,
@@ -2224,7 +2225,7 @@ async function submitCollection() {
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Posting…';
 
   const result = await api.CreateCollection({
-    date:           document.getElementById('colDate').value,
+    date:           new Date(document.getElementById('colDate').value).toISOString(),
     customer_id:    custId,
     customer_name:  custName,
     payment_method: document.getElementById('colMethod').value,
@@ -2557,7 +2558,7 @@ async function submitNewSOForm() {
   const payStatus  = document.getElementById('soPayStatus').value;
 
   const payload = {
-    date:             document.getElementById('soDate').value,
+    date:             new Date(document.getElementById('soDate').value).toISOString(),
     customer_id:      customerIdRaw ? parseInt(customerIdRaw, 10) : null,
     customer_name:    custName,
     customer_addr:    document.getElementById('soCustAddress').value.trim(),

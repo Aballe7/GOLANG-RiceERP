@@ -16,7 +16,8 @@ var DB *gorm.DB
 // Connect opens a MySQL connection using the DSN from config.
 func Connect(cfg *config.Config) error {
 	gormCfg := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger:                                   logger.Default.LogMode(logger.Warn),
+		DisableForeignKeyConstraintWhenMigrating: true,
 	}
 
 	// Parse DSN so we can inject sql_mode as a session variable on every

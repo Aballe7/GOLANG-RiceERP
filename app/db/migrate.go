@@ -604,6 +604,47 @@ func RunOITMSchemaMigrations() error {
 		}
 	}
 
+	// ── STEP P: Normalise charset / collation to utf8mb4_unicode_ci ────────
+	// MySQL 8.0 defaults to utf8mb4_0900_ai_ci. Tables created at different
+	// versions or via GORM AutoMigrate may carry mismatched column collations,
+	// causing Error 1267 on any cross-table JOIN (e.g. oitm JOIN oitw on
+	// item_code). Two sub-steps:
+	//   1. Set the DATABASE default so every future AutoMigrate CREATE TABLE
+	//      inherits utf8mb4_unicode_ci without needing DSN changes.
+	//   2. CONVERT each existing table that still has a mismatched column.
+	// This block is idempotent: on subsequent runs the information_schema
+	// query returns no rows and the loop body never executes.
+	{
+		var dbName string
+		if scanErr := DB.Raw("SELECT DATABASE()").Scan(&dbName).Error; scanErr == nil && dbName != "" {
+			if alterErr := DB.Exec(fmt.Sprintf(
+				"ALTER DATABASE `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", dbName,
+			)).Error; alterErr != nil {
+				fmt.Printf("[DB] WARN: could not set database collation: %v\n", alterErr)
+			}
+		}
+
+		type mismatchRow struct{ TableName string }
+		var mismatches []mismatchRow
+		DB.Raw(`
+			SELECT DISTINCT TABLE_NAME AS table_name
+			FROM   information_schema.COLUMNS
+			WHERE  TABLE_SCHEMA  = DATABASE()
+			  AND  COLLATION_NAME IS NOT NULL
+			  AND  COLLATION_NAME != 'utf8mb4_unicode_ci'
+			ORDER  BY TABLE_NAME
+		`).Scan(&mismatches)
+
+		for _, row := range mismatches {
+			if convertErr := DB.Exec(fmt.Sprintf(
+				"ALTER TABLE `%s` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+				row.TableName,
+			)).Error; convertErr != nil {
+				fmt.Printf("[DB] WARN: collation conversion failed for %s: %v\n", row.TableName, convertErr)
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -231,8 +231,16 @@ func currentValuationAllWarehouses(itmGrpCod int) ([]InvValuationRow, error) {
 		TotalValue   float64
 	}
 
-	var raws []rawRow
-	q := db.DB.Raw(`
+	// Build the optional item-group filter to avoid passing string params to
+	// string columns (prevents collation mismatch errors).
+	grpClause := ""
+	args := []interface{}{}
+	if itmGrpCod != 0 {
+		grpClause = "AND i.itms_grp_cod = ?"
+		args = append(args, itmGrpCod)
+	}
+
+	sqlQuery := fmt.Sprintf(`
 		SELECT
 		    i.item_code,
 		    i.item_name,
@@ -245,11 +253,12 @@ func currentValuationAllWarehouses(itmGrpCod int) ([]InvValuationRow, error) {
 		LEFT JOIN oitb b ON b.itms_grp_cod = i.itms_grp_cod
 		WHERE i.valid_for = 'Y'
 		  AND i.on_hand   > 0.001
-		  AND (? = 0 OR i.itms_grp_cod = ?)
+		  %s
 		ORDER BY category_name, i.item_name
-	`, itmGrpCod, itmGrpCod)
+	`, grpClause)
 
-	if err := q.Scan(&raws).Error; err != nil {
+	var raws []rawRow
+	if err := db.DB.Raw(sqlQuery, args...).Scan(&raws).Error; err != nil {
 		return nil, fmt.Errorf("currentValuationAllWarehouses: %w", err)
 	}
 
@@ -282,8 +291,21 @@ func currentValuationByWarehouse(whsCode string, itmGrpCod int) ([]InvValuationR
 		TotalValue   float64
 	}
 
-	var raws []rawRow
-	q := db.DB.Raw(`
+	// Build WHERE clauses conditionally — avoids comparing Go string params
+	// against string columns across mismatched collations (Error 1267).
+	whsCause := ""
+	grpClause := ""
+	args := []interface{}{}
+	if whsCode != "" {
+		whsCause = "AND w.whs_code = ?"
+		args = append(args, whsCode)
+	}
+	if itmGrpCod != 0 {
+		grpClause = "AND i.itms_grp_cod = ?"
+		args = append(args, itmGrpCod)
+	}
+
+	sqlQuery := fmt.Sprintf(`
 		SELECT
 		    w.item_code,
 		    i.item_name,
@@ -298,12 +320,13 @@ func currentValuationByWarehouse(whsCode string, itmGrpCod int) ([]InvValuationR
 		LEFT JOIN oitb b ON b.itms_grp_cod = i.itms_grp_cod
 		WHERE i.valid_for = 'Y'
 		  AND w.on_hand   > 0.001
-		  AND (? = '' OR w.whs_code = ?)
-		  AND (? = 0  OR i.itms_grp_cod = ?)
+		  %s
+		  %s
 		ORDER BY category_name, i.item_name
-	`, whsCode, whsCode, itmGrpCod, itmGrpCod)
+	`, whsCause, grpClause)
 
-	if err := q.Scan(&raws).Error; err != nil {
+	var raws []rawRow
+	if err := db.DB.Raw(sqlQuery, args...).Scan(&raws).Error; err != nil {
 		return nil, fmt.Errorf("currentValuationByWarehouse: %w", err)
 	}
 
@@ -327,17 +350,30 @@ func currentValuationByWarehouse(whsCode string, itmGrpCod int) ([]InvValuationR
 // unit_cost is derived as total_value / qty_on_hand (weighted average from ledger).
 func historicalValuation(asOf, whsCode string, itmGrpCod int) ([]InvValuationRow, error) {
 	type rawRow struct {
-		ItemCode      string
-		ItemName      string
-		CategoryName  string
-		Warehouse     string
-		UoM           string
-		QtyOnHand     float64
+		ItemCode       string
+		ItemName       string
+		CategoryName   string
+		Warehouse      string
+		UoM            string
+		QtyOnHand      float64
 		InventoryValue float64
 	}
 
-	var raws []rawRow
-	q := db.DB.Raw(`
+	// Build optional filters — avoids collation mismatch when comparing
+	// Go string params to string columns (Error 1267).
+	whsClause := ""
+	grpClause := ""
+	args := []interface{}{asOf}
+	if whsCode != "" {
+		whsClause = "AND v.warehouse = ?"
+		args = append(args, whsCode)
+	}
+	if itmGrpCod != 0 {
+		grpClause = "AND i.itms_grp_cod = ?"
+		args = append(args, itmGrpCod)
+	}
+
+	sqlQuery := fmt.Sprintf(`
 		SELECT
 		    v.item_code,
 		    MAX(v.item_name)                                       AS item_name,
@@ -350,14 +386,15 @@ func historicalValuation(asOf, whsCode string, itmGrpCod int) ([]InvValuationRow
 		JOIN  oitm i ON i.item_code = v.item_code
 		LEFT JOIN oitb b ON b.itms_grp_cod = i.itms_grp_cod
 		WHERE v.doc_date <= ?
-		  AND (? = '' OR v.warehouse = ?)
-		  AND (? = 0  OR i.itms_grp_cod = ?)
+		  %s
+		  %s
 		GROUP BY v.item_code, v.warehouse
 		HAVING qty_on_hand > 0.001
 		ORDER BY category_name, item_name
-	`, asOf, whsCode, whsCode, itmGrpCod, itmGrpCod)
+	`, whsClause, grpClause)
 
-	if err := q.Scan(&raws).Error; err != nil {
+	var raws []rawRow
+	if err := db.DB.Raw(sqlQuery, args...).Scan(&raws).Error; err != nil {
 		return nil, fmt.Errorf("historicalValuation: %w", err)
 	}
 

@@ -1,0 +1,19 @@
+# Build output
+build/bin/
+
+# IDE / tool local config
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/

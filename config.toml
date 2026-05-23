@@ -1,0 +1,9 @@
+[database]
+# MySQL DSN — edit to match your local MySQL installation
+dsn = "egglayer:egglayer123@tcp(127.0.0.1:3306)/rice_db?charset=utf8mb4&parseTime=True&loc=Local"
+max_open_conns = 10
+max_idle_conns = 5
+
+[app]
+debug = false
+app_name = "RiceMill"

@@ -57,7 +57,9 @@ func setupTestDB(t *testing.T) {
 		 doc_total numeric default 0,
 		 vat_sum numeric default 0,
 		 comments varchar(254),
-		 created_by_id integer
+		 created_by_id integer,
+		 updated_by_id integer,
+		 version integer default 1
 		)`,
 		// SAP B1-aligned PO line (POR1) — FK is header_id (GORM naming for HeaderID)
 		`CREATE TABLE purchase_line (
@@ -100,9 +102,11 @@ func setupTestDB(t *testing.T) {
 		 vat_sum numeric default 0,
 		 notes text,
 		 received_by varchar(100),
+		 received_by_id integer,
 		 purchase_header_id integer,
 		 created_at datetime,
-		 created_by_id integer
+		 created_by_id integer,
+		 updated_by_id integer
 		)`,
 		// SAP B1-aligned GRPO line (PDN1)
 		`CREATE TABLE dr_line (
@@ -154,10 +158,12 @@ func setupTestDB(t *testing.T) {
 		 vat_exclusive_amount numeric default 0,
 		 wht_rate numeric default 0,
 		 wht_amount numeric default 0,
-		 wht_atc_code varchar(10),
+		 whtatc_code varchar(10),
 		 net_payable numeric default 0,
 		 created_at datetime,
-		 created_by_id integer
+		 created_by_id integer,
+		 updated_by_id integer,
+		 version integer default 1
 		)`,
 		`CREATE TABLE ap_invoice_line (
 		 id integer primary key autoincrement,
@@ -194,7 +200,8 @@ func setupTestDB(t *testing.T) {
 		 reference_number varchar(50),
 		 notes text,
 		 created_at datetime,
-		 created_by_id integer
+		 created_by_id integer,
+		 updated_by_id integer
 		)`,
 		`CREATE TABLE ap_payment_line (
 		 id integer primary key autoincrement,
@@ -209,6 +216,7 @@ func setupTestDB(t *testing.T) {
 		 section varchar(20) not null,
 		 account_type varchar(10) not null default 'POSTING',
 		 normal_balance varchar(6) not null,
+		 cash_flow_class varchar(30) not null default '',
 		 parent_id integer,
 		 is_active boolean default 1,
 		 is_system boolean default 0,
@@ -245,6 +253,8 @@ func setupTestDB(t *testing.T) {
 		 is_reversal boolean default 0,
 		 reversed_entry_id integer,
 		 created_by_id integer,
+		 updated_by_id integer,
+		 version integer default 1,
 		 created_at datetime
 		)`,
 		`CREATE TABLE je_line (

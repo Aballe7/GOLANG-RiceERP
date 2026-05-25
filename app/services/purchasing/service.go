@@ -278,7 +278,8 @@ func CreatePurchaseHeader(params CreatePurchaseParams, createdByID *uint) (*mode
 	if err != nil {
 		return nil, err
 	}
-	return header, nil
+	// Reload with lines so callers get accurate IDs for the created PurchaseLines.
+	return GetPurchaseHeader(header.ID)
 }
 
 // CancelPurchaseHeader cancels a PO. Guard: no confirmed DRs may exist.

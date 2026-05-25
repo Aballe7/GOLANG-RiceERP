@@ -4,6 +4,7 @@
 
 let _arList   = [];
 let _arDetail = null;
+window._arOverdueOnly = false; // true when the "Overdue" preset is active
 
 async function loadArInvoicesList(tabBar) {
   _arList = await api.ListARInvoices(null, '') || [];
@@ -37,6 +38,7 @@ async function loadArInvoicesList(tabBar) {
       <button class="btn btn-sm btn-outline-secondary" data-preset="last-30"    onclick="arDatePreset('last-30')">Last 30 Days</button>
       <button class="btn btn-sm btn-outline-secondary" data-preset="last-90"    onclick="arDatePreset('last-90')">Last 90 Days</button>
       <button class="btn btn-sm btn-outline-secondary" data-preset="custom"     onclick="arDatePreset('custom')"><i class="bi bi-sliders me-1"></i>Custom Range</button>
+      <button class="btn btn-sm btn-outline-danger"    data-preset="overdue"    onclick="arDatePreset('overdue')"><i class="bi bi-exclamation-circle me-1"></i>Overdue</button>
     </div>
 
     <!-- KPI summary strip (updated by arFilter) -->
@@ -102,6 +104,9 @@ window.arDatePreset = function(preset) {
   const fmt   = d => d.toISOString().slice(0, 10);
   let from = '', to = fmt(today);
 
+  // Reset overdue mode unless this IS the overdue preset
+  if (preset !== 'overdue') window._arOverdueOnly = false;
+
   if (preset === 'this-month') {
     from = fmt(new Date(today.getFullYear(), today.getMonth(), 1));
   } else if (preset === 'last-30') {
@@ -112,6 +117,18 @@ window.arDatePreset = function(preset) {
     const fromEl = document.getElementById('sf-date-from');
     if (fromEl) { fromEl.focus(); fromEl.showPicker && fromEl.showPicker(); }
     _arMarkPreset('custom');
+    return;
+  } else if (preset === 'overdue') {
+    // Clear date range, force status to Open/Partial, enable overdue flag
+    const fromEl = document.getElementById('sf-date-from');
+    const toEl   = document.getElementById('sf-date-to');
+    const statEl = document.getElementById('sf-status');
+    if (fromEl) fromEl.value = '';
+    if (toEl)   toEl.value   = '';
+    if (statEl) statEl.value = 'Open,Partial';
+    window._arOverdueOnly = true;
+    _arMarkPreset('overdue');
+    arFilter();
     return;
   }
 
@@ -132,10 +149,25 @@ function _arMarkPreset(active) {
 }
 
 window.arFilter = function() {
+  // If user changed the status away from Open,Partial while overdue mode was active, exit overdue mode
+  if (window._arOverdueOnly && _sfVal('sf-status') !== 'Open,Partial') {
+    window._arOverdueOnly = false;
+    _arMarkPreset('');
+  }
+
   const filtered = _applyFilters(_arList, {
     docField: 'invoice_number', amountField: 'total_amount',
     defaultStatuses: ['Open','Partial'],
   });
+
+  // When overdue mode is on, further restrict to past-due rows only
+  const today = new Date().toISOString().slice(0, 10);
+  const displayRows = window._arOverdueOnly
+    ? filtered.filter(i => {
+        const due = (i.due_date || '').slice(0, 10);
+        return due && due < today && (i.status === 'Open' || i.status === 'Partial');
+      })
+    : filtered;
 
   // ── KPI computation (all non-Cancelled, date-filtered) ────────────────────
   const dateFrom = _sfVal('sf-date-from');
@@ -150,7 +182,11 @@ window.arFilter = function() {
   const revenue     = activeAR.reduce((s, i) => s + (i.total_amount    ?? 0), 0);
   const collected   = activeAR.reduce((s, i) => s + (i.amount_collected ?? 0), 0);
   const outstanding = revenue - collected;
-  const openInvoices = activeAR.filter(i => i.status === 'Open' || i.status === 'Partial');
+  const openInvoices   = activeAR.filter(i => i.status === 'Open' || i.status === 'Partial');
+  const overdueInvoices = openInvoices.filter(i => {
+    const due = (i.due_date || '').slice(0, 10);
+    return due && due < today;
+  });
   const _kpi = id => document.getElementById(id);
   if (_kpi('ar-kpi-revenue'))       _kpi('ar-kpi-revenue').textContent       = formatCurrency(revenue);
   if (_kpi('ar-kpi-revenue-sub'))   _kpi('ar-kpi-revenue-sub').textContent   = `${activeAR.length} invoice${activeAR.length !== 1 ? 's' : ''}`;
@@ -159,21 +195,34 @@ window.arFilter = function() {
   if (_kpi('ar-kpi-outstanding'))   _kpi('ar-kpi-outstanding').textContent   = formatCurrency(outstanding);
   if (_kpi('ar-kpi-outstanding-sub')) _kpi('ar-kpi-outstanding-sub').textContent = revenue > 0 ? `${Math.round(outstanding / revenue * 100)}% of revenue` : '';
   if (_kpi('ar-kpi-open'))          _kpi('ar-kpi-open').textContent          = openInvoices.length;
-  if (_kpi('ar-kpi-open-sub'))      _kpi('ar-kpi-open-sub').textContent      = openInvoices.length > 0 ? formatCurrency(openInvoices.reduce((s, i) => s + Math.max(0, (i.total_amount ?? 0) - (i.amount_collected ?? 0)), 0)) + ' due' : 'All clear';
+  if (_kpi('ar-kpi-open-sub')) {
+    const openSub = _kpi('ar-kpi-open-sub');
+    if (overdueInvoices.length > 0) {
+      openSub.innerHTML = `<span class="text-danger fw-semibold">${overdueInvoices.length} overdue</span>`;
+    } else if (openInvoices.length > 0) {
+      openSub.textContent = formatCurrency(openInvoices.reduce((s, i) => s + Math.max(0, (i.total_amount ?? 0) - (i.amount_collected ?? 0)), 0)) + ' due';
+    } else {
+      openSub.textContent = 'All clear';
+    }
+  }
 
-  const rows = filtered.length === 0
+  const rows = displayRows.length === 0
     ? `<tr><td colspan="8" class="text-center text-muted py-4">No AR invoices match the filter.</td></tr>`
-    : filtered.map(i => {
+    : displayRows.map(i => {
         const balance = (i.total_amount ?? 0) - (i.amount_collected ?? 0);
+        const due = (i.due_date || '').slice(0, 10);
+        const isOverdue = due && due < today && (i.status === 'Open' || i.status === 'Partial');
+        const rowCls     = isOverdue ? ' class="table-warning"' : '';
+        const overdueBadge = isOverdue ? `<span class="badge bg-danger ms-1">Overdue</span>` : '';
         return `
-        <tr>
+        <tr${rowCls}>
           <td class="fw-semibold">${i.invoice_number || '—'}</td>
           <td>${formatDate(i.date)}</td>
-          <td>${formatDate(i.due_date)}</td>
+          <td>${isOverdue ? `<span class="text-danger fw-semibold">${formatDate(i.due_date)}</span>` : formatDate(i.due_date)}</td>
           <td>${i.customer_name_snapshot || (i.customer && i.customer.name) || '—'}</td>
           <td>${formatCurrency(i.total_amount ?? 0)}</td>
           <td class="${balance > 0 ? 'text-danger fw-semibold' : ''}">${formatCurrency(balance)}</td>
-          <td>${salesStatusBadge(i.status)}</td>
+          <td>${salesStatusBadge(i.status)}${overdueBadge}</td>
           <td class="text-end">
             <button class="btn btn-sm btn-outline-secondary me-1" onclick="navigate('#/sales/ar-invoices/${i.id}')">
               <i class="bi bi-eye"></i>

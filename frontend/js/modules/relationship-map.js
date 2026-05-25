@@ -126,6 +126,17 @@ function _buildPurchasingStages(po, cType, cId) {
 }
 
 function _buildSalesStages(so, cType, cId) {
+  // Collect unique collections from AR invoice collection lines
+  const collMap = new Map();
+  (so.ar_invoices || []).forEach(inv => {
+    (inv.collection_lines || []).forEach(cl => {
+      const col = cl.collection;
+      if (col && col.id && !collMap.has(col.id)) {
+        collMap.set(col.id, col);
+      }
+    });
+  });
+
   return [
     {
       label: 'Sales Order',
@@ -163,6 +174,17 @@ function _buildSalesStages(so, cType, cId) {
         status: inv.status,
         amount: inv.total_amount || 0,
         current: _isCur('AR_INV', inv.id, cType, cId),
+      })),
+    },
+    {
+      label: 'Collection',
+      route: '#/sales/collections/',
+      docs: [...collMap.values()].map(col => ({
+        id: col.id, type: 'COL',
+        num:    col.collection_number || `COL-${String(col.id).padStart(5,'0')}`,
+        status: col.status || 'Posted',
+        amount: col.total_amount || 0,
+        current: _isCur('COL', col.id, cType, cId),
       })),
     },
   ];

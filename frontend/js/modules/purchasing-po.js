@@ -477,18 +477,71 @@ async function loadPurchaseDetail(id) {
   `).join('') || `<tr><td colspan="4" class="text-muted text-center py-3">No delivery receipts.</td></tr>`;
 
   // AP Invoices
-  const aps = (p.ap_invoices || []).map(inv => `
+  const aps = (p.ap_invoices || []).map(inv => {
+    const apBal = Math.max(0, (inv.doc_total ?? 0) - (inv.amount_paid_stored ?? 0));
+    return `
     <tr style="cursor:pointer" onclick="navigate('#/purchasing/ap-invoices/${inv.id}')">
       <td class="fw-semibold text-primary">${inv.invoice_number || '—'}</td>
       <td>${formatDate(inv.posting_date)}</td>
       <td>${purchStatusBadge(inv.status)}</td>
       <td class="text-end">${formatCurrency(inv.doc_total ?? 0)}</td>
-      <td class="text-end">${formatCurrency(inv.amount_paid_stored ?? 0)}</td>
-    </tr>
-  `).join('') || `<tr><td colspan="5" class="text-muted text-center py-3">No AP invoices.</td></tr>`;
+      <td class="text-end text-success">${formatCurrency(inv.amount_paid_stored ?? 0)}</td>
+      <td class="text-end ${apBal > 0.005 ? 'text-danger fw-semibold' : 'text-success'}">${apBal > 0.005 ? formatCurrency(apBal) : '<i class="bi bi-check-circle-fill"></i>'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" class="text-muted text-center py-3">No AP invoices.</td></tr>`;
 
   const canCancel = p.status !== 'Cancelled' && p.status !== 'Closed' &&
     !(p.delivery_receipts || []).some(dr => dr.status === 'Received');
+
+  // Fulfillment progress
+  const _poTotal   = p.doc_total || 0;
+  const _poReceived = (p.delivery_receipts || [])
+    .filter(dr => dr.status === 'Received')
+    .reduce((s, dr) => s + (dr.doc_total ?? 0), 0);
+  const _poInvoiced = (p.ap_invoices || [])
+    .filter(inv => inv.status !== 'Cancelled')
+    .reduce((s, inv) => s + (inv.doc_total ?? 0), 0);
+  const _poPaid = (p.ap_invoices || [])
+    .filter(inv => inv.status !== 'Cancelled')
+    .reduce((s, inv) => s + (inv.amount_paid_stored ?? 0), 0);
+  const _ppRec = _poTotal > 0 ? Math.min(100, Math.round(_poReceived / _poTotal * 100)) : 0;
+  const _ppInv = _poTotal > 0 ? Math.min(100, Math.round(_poInvoiced / _poTotal * 100)) : 0;
+  const _ppPaid = _poTotal > 0 ? Math.min(100, Math.round(_poPaid    / _poTotal * 100)) : 0;
+  const _poFulfillmentBar = `
+    <div class="card border-0 shadow-sm mb-4">
+      <div class="card-body py-3 px-4">
+        <div class="small text-muted fw-bold mb-2"><i class="bi bi-bar-chart-steps me-2"></i>FULFILLMENT PROGRESS</div>
+        <div class="d-flex align-items-start flex-nowrap gap-0 overflow-auto">
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Ordered</div>
+            <div class="fw-bold text-dark mt-1 small">${formatCurrency(_poTotal)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-secondary" style="width:100%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">100%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Received</div>
+            <div class="fw-bold text-primary mt-1 small">${formatCurrency(_poReceived)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-primary" style="width:${_ppRec}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_ppRec}%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Invoiced</div>
+            <div class="fw-bold text-info mt-1 small">${formatCurrency(_poInvoiced)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-info" style="width:${_ppInv}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_ppInv}%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Paid</div>
+            <div class="fw-bold text-success mt-1 small">${formatCurrency(_poPaid)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-success" style="width:${_ppPaid}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_ppPaid}%</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
 
   showView(`
     <div class="container-fluid p-4">
@@ -521,6 +574,8 @@ async function loadPurchaseDetail(id) {
           </div>
         </div>
       </div>
+
+      ${_poFulfillmentBar}
 
       <!-- PO Lines -->
       <div class="card border-0 shadow-sm mb-4">
@@ -574,7 +629,7 @@ async function loadPurchaseDetail(id) {
         <div class="table-responsive">
           <table class="table table-hover align-middle mb-0 small">
             <thead class="table-light">
-              <tr><th>Invoice #</th><th>Date</th><th>Status</th><th class="text-end">Total</th><th class="text-end">Paid</th></tr>
+              <tr><th>Invoice #</th><th>Date</th><th>Status</th><th class="text-end">Total</th><th class="text-end">Paid</th><th class="text-end">Balance</th></tr>
             </thead>
             <tbody>${aps}</tbody>
           </table>

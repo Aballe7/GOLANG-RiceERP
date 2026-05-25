@@ -35,6 +35,45 @@ async function loadSalesOrdersList(tabBar) {
       </button>
     </div>
 
+    <!-- KPI summary strip (updated by soFilter) -->
+    <div class="row g-3 mb-3">
+      <div class="col-6 col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+          <div class="card-body py-2 px-3">
+            <div class="text-muted small mb-1"><i class="bi bi-bag me-1"></i>Total Value</div>
+            <div class="fw-bold fs-5 text-dark" id="so-kpi-total">—</div>
+            <div class="text-muted" style="font-size:.7rem" id="so-kpi-total-sub"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+          <div class="card-body py-2 px-3">
+            <div class="text-muted small mb-1"><i class="bi bi-truck me-1 text-primary"></i>Delivered</div>
+            <div class="fw-bold fs-5 text-primary" id="so-kpi-delivered">—</div>
+            <div class="text-muted" style="font-size:.7rem" id="so-kpi-delivered-sub"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+          <div class="card-body py-2 px-3">
+            <div class="text-muted small mb-1"><i class="bi bi-hourglass-split me-1 text-warning"></i>Outstanding</div>
+            <div class="fw-bold fs-5 text-warning" id="so-kpi-outstanding">—</div>
+            <div class="text-muted" style="font-size:.7rem" id="so-kpi-outstanding-sub"></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card border-0 shadow-sm h-100">
+          <div class="card-body py-2 px-3">
+            <div class="text-muted small mb-1"><i class="bi bi-files me-1 text-danger"></i>Open Orders</div>
+            <div class="fw-bold fs-5 text-danger" id="so-kpi-open">—</div>
+            <div class="text-muted" style="font-size:.7rem" id="so-kpi-open-sub"></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
 ${_filterBar(statusOpts, 'Draft,Unpaid,Partial', 'soFilter()', {
       doc:  _soList.map(o => o.sales_order_number),
@@ -60,6 +99,33 @@ window.soFilter = function() {
     docField: 'sales_order_number', amountField: 'grand_total', statusField: '_eff',
     defaultStatuses: ['Draft','Unpaid','Partial'],
   });
+
+  // ── KPI computation (all non-Cancelled, date-filtered) ────────────────────
+  const dateFrom = _sfVal('sf-date-from');
+  const dateTo   = _sfVal('sf-date-to');
+  const activeSO = _soList.filter(o => {
+    if (o.doc_status === 'Cancelled') return false;
+    const d = (o.date || '').slice(0, 10);
+    if (dateFrom && d < dateFrom) return false;
+    if (dateTo   && d > dateTo)   return false;
+    return true;
+  });
+  const soTotal       = activeSO.reduce((s, o) => s + (o.grand_total      ?? 0), 0);
+  const soDelivered   = activeSO.reduce((s, o) => s + (o.amount_delivered  ?? 0), 0);
+  const soCollected   = activeSO.reduce((s, o) => s + (o.amount_collected  ?? 0), 0);
+  const soOutstanding = soTotal - soCollected;
+  const openOrders    = activeSO.filter(o => o.doc_status === 'Open' || o.doc_status === 'Draft');
+  const _kpi = id => document.getElementById(id);
+  if (_kpi('so-kpi-total'))          _kpi('so-kpi-total').textContent          = formatCurrency(soTotal);
+  if (_kpi('so-kpi-total-sub'))      _kpi('so-kpi-total-sub').textContent      = `${activeSO.length} order${activeSO.length !== 1 ? 's' : ''}`;
+  if (_kpi('so-kpi-delivered'))      _kpi('so-kpi-delivered').textContent      = formatCurrency(soDelivered);
+  if (_kpi('so-kpi-delivered-sub'))  _kpi('so-kpi-delivered-sub').textContent  = soTotal > 0 ? `${Math.round(soDelivered / soTotal * 100)}% of total` : '';
+  if (_kpi('so-kpi-outstanding'))    _kpi('so-kpi-outstanding').textContent    = formatCurrency(soOutstanding);
+  if (_kpi('so-kpi-outstanding-sub')) _kpi('so-kpi-outstanding-sub').textContent = soTotal > 0 ? `${Math.round(soOutstanding / soTotal * 100)}% uncollected` : '';
+  if (_kpi('so-kpi-open'))           _kpi('so-kpi-open').textContent           = openOrders.length;
+  if (_kpi('so-kpi-open-sub'))       _kpi('so-kpi-open-sub').textContent       = openOrders.length > 0
+    ? formatCurrency(openOrders.reduce((s, o) => s + Math.max(0, (o.grand_total ?? 0) - (o.amount_collected ?? 0)), 0)) + ' due'
+    : activeSO.length > 0 ? 'All closed/paid' : '';
 
   const rows = filtered.length === 0
     ? `<tr><td colspan="6" class="text-center text-muted py-4">No sales orders match the filter.</td></tr>`
@@ -107,17 +173,21 @@ async function loadSODetail(id) {
       <td class="text-end pe-4 fw-bold text-primary">${formatCurrency(i.line_total)}</td>
     </tr>`).join('') || `<tr><td colspan="6" class="text-center text-muted py-3">No items.</td></tr>`;
 
-  const doRows = deliveries.map(d => `
+  const doRows = deliveries.map(d => {
+    const doTotal = (d.items || []).reduce((s, i) => s + ((i.quantity_delivered || 0) * (i.price_per_unit || 0)), 0);
+    return `
     <tr>
       <td class="ps-4 fw-semibold">
         <a href="#" onclick="navigate('#/sales/delivery-orders/${d.id}');return false;" class="text-decoration-none">${d.delivery_number}</a>
       </td>
       <td class="text-muted small">${formatDate(d.date)}</td>
       <td>${salesStatusBadge(d.status)}</td>
+      <td class="text-end">${formatCurrency(doTotal)}</td>
       <td class="text-end pe-3">
         <button class="btn btn-sm btn-outline-secondary" onclick="navigate('#/sales/delivery-orders/${d.id}')">View</button>
       </td>
-    </tr>`).join('') || `<tr><td colspan="4" class="text-center text-muted py-3">No delivery orders.</td></tr>`;
+    </tr>`;
+  }).join('') || `<tr><td colspan="5" class="text-center text-muted py-3">No delivery orders.</td></tr>`;
 
   const invRows = arInvoices.map(i => {
     const bal = Math.max(0, (i.total_amount || 0) - (i.amount_collected || 0));
@@ -138,6 +208,47 @@ async function loadSODetail(id) {
   const canCancel   = !isCancelled && so.doc_status !== 'Closed' && deliveries.length === 0 && arInvoices.length === 0;
   const effStatus   = _soEffectiveStatus(so);
   const custName    = so.customer_name_snapshot || (so.customer && so.customer.name) || '—';
+
+  // Fulfillment progress percentages
+  const _gt = so.grand_total || 0;
+  const _pDel = _gt > 0 ? Math.min(100, Math.round((so.amount_delivered || 0) / _gt * 100)) : 0;
+  const _pInv = _gt > 0 ? Math.min(100, Math.round((so.amount_invoiced  || 0) / _gt * 100)) : 0;
+  const _pCol = _gt > 0 ? Math.min(100, Math.round((so.amount_collected || 0) / _gt * 100)) : 0;
+  const _fulfillmentBar = `
+    <div class="card border-0 shadow-sm mb-3">
+      <div class="card-body py-3 px-4">
+        <div class="small text-muted fw-bold mb-2"><i class="bi bi-bar-chart-steps me-2"></i>FULFILLMENT PROGRESS</div>
+        <div class="d-flex align-items-start flex-nowrap gap-0 overflow-auto">
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Ordered</div>
+            <div class="fw-bold text-dark mt-1 small">${formatCurrency(_gt)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-secondary" style="width:100%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">100%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Delivered</div>
+            <div class="fw-bold text-primary mt-1 small">${formatCurrency(so.amount_delivered || 0)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-primary" style="width:${_pDel}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_pDel}%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Invoiced</div>
+            <div class="fw-bold text-info mt-1 small">${formatCurrency(so.amount_invoiced || 0)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-info" style="width:${_pInv}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_pInv}%</div>
+          </div>
+          <div class="text-muted align-self-center pb-4 px-1" style="font-size:.8rem">›</div>
+          <div class="flex-fill text-center px-2" style="min-width:90px">
+            <div class="text-muted" style="font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Collected</div>
+            <div class="fw-bold text-success mt-1 small">${formatCurrency(so.amount_collected || 0)}</div>
+            <div class="progress my-1" style="height:4px"><div class="progress-bar bg-success" style="width:${_pCol}%"></div></div>
+            <div class="text-muted" style="font-size:.65rem">${_pCol}%</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
 
   showView(`
     <div class="container-fluid px-4 py-4" style="max-width:960px">
@@ -189,6 +300,8 @@ async function loadSODetail(id) {
         </div>
       </div>
 
+      ${_fulfillmentBar}
+
       <div class="card border-0 shadow-sm mb-3">
         <div class="card-header bg-white border-bottom py-3"><span class="fw-bold"><i class="bi bi-box-seam me-2 text-primary"></i>Line Items</span></div>
         <div class="table-responsive">
@@ -209,7 +322,7 @@ async function loadSODetail(id) {
         </div>
         <div class="table-responsive">
           <table class="table align-middle mb-0">
-            <thead class="table-light"><tr><th class="ps-4">DO #</th><th>Date</th><th>Status</th><th></th></tr></thead>
+            <thead class="table-light"><tr><th class="ps-4">DO #</th><th>Date</th><th>Status</th><th class="text-end">Total</th><th></th></tr></thead>
             <tbody>${doRows}</tbody>
           </table>
         </div>

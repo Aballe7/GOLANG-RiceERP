@@ -225,6 +225,7 @@ func GetSalesOrder(id uint) (*models.SalesOrder, error) {
 		Preload("Items").
 		Preload("Deliveries.Items").
 		Preload("ARInvoices.Items").
+		Preload("ARInvoices.CollectionLines.Collection").
 		First(&so, id).Error
 	return &so, err
 }

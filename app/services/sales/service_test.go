@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"ricemill/app/db"
 	"ricemill/app/models"
 	"ricemill/app/testutil"
 )
@@ -445,6 +446,189 @@ func TestTwoPartialCollectionsThenPaid(t *testing.T) {
 	inv3, _ := GetARInvoice(inv.ID)
 	require.Equal(t, "Paid", inv3.Status)
 	require.InDelta(t, total, inv3.AmountCollected, 0.005)
+}
+
+// ─────────────────────────────────────────────
+// COGS journal entry
+// ─────────────────────────────────────────────
+
+// TestConfirmDeliveryOrder_PostsCOGSJournalEntry verifies that confirming a DO
+// posts a balanced JE: DR Cost of Goods Sold / CR Inventory — Milled Rice.
+// The amounts are qty × avg_price (moving-average cost), not the selling price.
+func TestConfirmDeliveryOrder_PostsCOGSJournalEntry(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+	testutil.SeedOITM(t, "RICE-001", "Milled Rice Premium", 80.0) // avg cost ₱80/bag
+
+	const qty   = 100.0
+	const price = 120.0        // selling price — must not appear in COGS JE
+	const cost  = 80.0         // avg cost  — must appear in COGS JE
+	const expectedCOGS = qty * cost // ₱8,000
+
+	so, err := CreateSalesOrder(
+		"2025-03-01",
+		nil, "Agri Buyer", "", "", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: qty, PricePerUnit: price, LineTotal: qty * price},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-03-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID:  &soItemID,
+			SKU:               "RICE-001",
+			Unit:              "bag",
+			QuantityOrdered:   qty,
+			QuantityDelivered: qty,
+			PricePerUnit:      price,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, ConfirmDeliveryOrder(do.ID, nil))
+
+	// A COGS JE must exist, sourced from this Delivery Order
+	var je models.JournalEntry
+	err = db.DB.
+		Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).
+		First(&je).Error
+	require.NoError(t, err, "COGS JE must be posted when DO is confirmed")
+	require.Equal(t, "SALES", je.Module)
+	require.Equal(t, "POSTED", je.Status)
+
+	// Load lines and verify the entry balances at the cost amount, not the selling price
+	var lines []models.JournalEntryLine
+	require.NoError(t, db.DB.Where("journal_entry_id = ?", je.ID).Find(&lines).Error)
+	require.Len(t, lines, 2, "COGS JE must have exactly 2 lines (Dr + Cr)")
+
+	var totalDr, totalCr float64
+	for _, l := range lines {
+		if l.Debit != nil {
+			totalDr += *l.Debit
+		}
+		if l.Credit != nil {
+			totalCr += *l.Credit
+		}
+	}
+	require.InDelta(t, expectedCOGS, totalDr, 0.005, "debit must equal qty × avg_price")
+	require.InDelta(t, expectedCOGS, totalCr, 0.005, "credit must equal qty × avg_price")
+	require.InDelta(t, totalDr, totalCr, 0.005, "JE must balance")
+}
+
+// TestConfirmDeliveryOrder_COGSAggregatesMultipleItems verifies that a DO with
+// two line items posts a single COGS JE whose amounts sum all item costs.
+func TestConfirmDeliveryOrder_COGSAggregatesMultipleItems(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+	testutil.SeedOITM(t, "RICE-001", "Premium Rice", 80.0) // 50 bags  × ₱80 = ₱4,000
+	testutil.SeedOITM(t, "BRAN-001", "Rice Bran",    20.0) // 200 bags × ₱20 = ₱4,000
+
+	so, err := CreateSalesOrder(
+		"2025-03-01",
+		nil, "Multi Buyer", "", "", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 50,  PricePerUnit: 120, LineTotal: 6_000},
+			{SKU: "BRAN-001", Unit: "bag", Quantity: 200, PricePerUnit: 30,  LineTotal: 6_000},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+
+	so, _ = GetSalesOrder(so.ID)
+	soItem1ID := so.Items[0].ID
+	soItem2ID := so.Items[1].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-03-02", "Driver", "",
+		[]models.DeliveryOrderItem{
+			{SalesOrderItemID: &soItem1ID, SKU: "RICE-001", Unit: "bag",
+				QuantityOrdered: 50, QuantityDelivered: 50, PricePerUnit: 120},
+			{SalesOrderItemID: &soItem2ID, SKU: "BRAN-001", Unit: "bag",
+				QuantityOrdered: 200, QuantityDelivered: 200, PricePerUnit: 30},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, ConfirmDeliveryOrder(do.ID, nil))
+
+	// Single aggregated COGS JE — not one per item
+	var count int64
+	db.DB.Model(&models.JournalEntry{}).
+		Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).
+		Count(&count)
+	require.Equal(t, int64(1), count, "exactly one COGS JE per DO")
+
+	var je models.JournalEntry
+	db.DB.Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).First(&je)
+
+	var lines []models.JournalEntryLine
+	require.NoError(t, db.DB.Where("journal_entry_id = ?", je.ID).Find(&lines).Error)
+	require.Len(t, lines, 2)
+
+	// Total cost: (50 × ₱80) + (200 × ₱20) = ₱4,000 + ₱4,000 = ₱8,000
+	expectedCOGS := 50.0*80.0 + 200.0*20.0
+
+	var totalDr float64
+	for _, l := range lines {
+		if l.Debit != nil {
+			totalDr += *l.Debit
+		}
+	}
+	require.InDelta(t, expectedCOGS, totalDr, 0.005,
+		"aggregated COGS must equal sum of (invQty × avgPrice) across all items")
+}
+
+// TestConfirmDeliveryOrder_NoCOGSWhenAvgPriceIsZero verifies that no COGS JE
+// is posted when all delivered items carry zero avg_price (cost not yet known).
+// This guards the case where items exist in OITM but haven't been costed.
+func TestConfirmDeliveryOrder_NoCOGSWhenAvgPriceIsZero(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+	testutil.SeedOITM(t, "RICE-001", "Uncosted Rice", 0.0) // avg_price intentionally zero
+
+	so, err := CreateSalesOrder(
+		"2025-03-01",
+		nil, "Zero Cost Buyer", "", "", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 50, PricePerUnit: 120, LineTotal: 6_000},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-03-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID:  &soItemID,
+			SKU:               "RICE-001",
+			Unit:              "bag",
+			QuantityOrdered:   50,
+			QuantityDelivered: 50,
+			PricePerUnit:      120,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, ConfirmDeliveryOrder(do.ID, nil))
+
+	// No COGS JE — zero-cost guard must hold
+	var count int64
+	db.DB.Model(&models.JournalEntry{}).
+		Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).
+		Count(&count)
+	require.Zero(t, count, "no COGS JE should be posted when avg_price is 0")
 }
 
 // ─────────────────────────────────────────────

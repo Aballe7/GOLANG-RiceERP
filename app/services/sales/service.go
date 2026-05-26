@@ -566,12 +566,13 @@ func ConfirmDeliveryOrder(id uint, userID *uint) error {
 				Updates(map[string]interface{}{"doc_status": "Closed", "updated_by_id": userID})
 		}
 
-		// Decrement on_hand / OITW / OIVL for each delivered line
+		// Decrement on_hand / OITW / OIVL for each delivered line; accumulate COGS.
 		var createdByID uint
 		if userID != nil {
 			createdByID = *userID
 		}
 		doDate := do.Date.Format("2006-01-02")
+		var cogsTotal float64
 		for _, item := range do.Items {
 			var oitm models.OITM
 			if tx.Where("item_code = ? OR item_name = ?", item.SKU, item.SKU).First(&oitm).Error != nil {
@@ -590,6 +591,35 @@ func ConfirmDeliveryOrder(id uint, userID *uint) error {
 			_ = invsvc.AppendOIVL(tx, oitm.ItemCode, oitm.ItemName, "", oitm.DfltWh,
 				"DO", doDate, int(do.ID),
 				0, invQty, oitm.AvgPrice, createdByID)
+			cogsTotal += invQty * oitm.AvgPrice // accumulate at moving-average cost
+		}
+
+		// Post COGS journal entry: DR Cost of Goods Sold / CR Inventory (at avg cost).
+		// Skipped when cogsTotal == 0 — all items have zero avg_price or OITM not found.
+		if cogsTotal > 0 {
+			cogsAcct, err := accounting.GetAccount(tx, "SALES", "COGS")
+			if err != nil {
+				return err
+			}
+			invAcct, err := accounting.GetAccount(tx, "SALES", "INVENTORY_SOLD")
+			if err != nil {
+				return err
+			}
+			_, err = accounting.PostJournalEntry(tx, accounting.PostJEParams{
+				Module:      "SALES",
+				SourceType:  "DELIVERY_ORDER",
+				SourceID:    &do.ID,
+				SourceRef:   do.DeliveryNumber,
+				Narration:   "COGS: Delivery " + do.DeliveryNumber,
+				CreatedByID: userID,
+				Lines: []accounting.JELine{
+					{Account: cogsAcct, Debit:  cogsTotal, Description: "Cost of Goods Sold"},
+					{Account: invAcct,  Credit: cogsTotal, Description: "Inventory — goods out"},
+				},
+			})
+			if err != nil {
+				return err
+			}
 		}
 
 		return nil

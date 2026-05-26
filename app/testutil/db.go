@@ -83,6 +83,20 @@ func AcctDet(t *testing.T, module, event string, category *string, glID uint) {
 	}).Error)
 }
 
+// SeedOITM inserts a minimal OITM (Item Master) row for tests that exercise
+// inventory and COGS paths (on_hand decrement, COGS JE, etc.).
+// Raw SQL is used so callers don't need to populate every GORM model field.
+// Returns itemCode for convenient chaining in test setup.
+func SeedOITM(t *testing.T, itemCode, itemName string, avgPrice float64) string {
+	t.Helper()
+	require.NoError(t, db.DB.Exec(
+		`INSERT INTO oitm (item_code, item_name, avg_price, on_hand, sell_item, valid_for)
+		 VALUES (?, ?, ?, 1000, 'Y', 'Y')`,
+		itemCode, itemName, avgPrice,
+	).Error)
+	return itemCode
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level seed bundles
 // ─────────────────────────────────────────────────────────────────────────────
@@ -369,6 +383,36 @@ func allTablesDDL() []string {
 			collection_id integer not null,
 			ar_invoice_id integer not null,
 			amount_applied numeric not null
+		)`,
+
+		// ── Item Master (OITB + OITM) ────────────────────────────────────────
+		// Minimal columns: only those read/written by the sales & purchasing service layer.
+		// Raw SQL inserts in SeedOITM bypass GORM's full-model insert, so extra columns
+		// (num_in_buy, lst_evl_pric, …) are intentionally omitted to keep the DDL lean.
+		`CREATE TABLE IF NOT EXISTS oitb (
+			itms_grp_cod integer primary key autoincrement,
+			itms_grp_nam varchar(100) not null unique,
+			description  varchar(255) default '',
+			is_active    tinyint(1)   default 1,
+			for_sales    tinyint(1)   default 1,
+			for_purchasing tinyint(1) default 1,
+			for_inventory  tinyint(1) default 1,
+			for_production tinyint(1) default 1
+		)`,
+		`CREATE TABLE IF NOT EXISTS oitm (
+			id           integer primary key autoincrement,
+			item_code    varchar(50)  unique not null,
+			item_name    varchar(150) not null default '',
+			itms_grp_cod integer      not null default 0,
+			invntry_uom  varchar(20)  not null default 'unit',
+			i_uom_entry  integer      not null default 0,
+			ugp_entry    integer      not null default 0,
+			on_hand      numeric      default 0,
+			is_commited  numeric      default 0,
+			avg_price    numeric      default 0,
+			dflt_wh      varchar(10)  default '',
+			sell_item    char(1)      default 'Y',
+			valid_for    char(1)      default 'Y'
 		)`,
 
 		// ── Purchasing (for future purchasing tests using testutil) ───────────

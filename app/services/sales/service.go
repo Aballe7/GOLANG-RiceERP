@@ -638,9 +638,13 @@ func CancelDeliveryOrder(id uint, userID *uint) error {
 		}
 
 		if do.Status == "Delivered" {
-			// Guard: no AR Invoices exist
+			// Guard: check the many2many junction table — ar_invoice has no direct delivery_order_id column
 			var invCount int64
-			tx.Model(&models.ARInvoice{}).Where("delivery_order_id = ?", id).Count(&invCount)
+			if err := tx.Table("ar_invoice_delivery").
+				Where("delivery_order_id = ?", id).
+				Count(&invCount).Error; err != nil {
+				return fmt.Errorf("failed to check AR invoices for %s: %w", do.DeliveryNumber, err)
+			}
 			if invCount > 0 {
 				return fmt.Errorf("cannot cancel %s: %d AR invoice(s) exist — cancel them first", do.DeliveryNumber, invCount)
 			}
@@ -683,6 +687,15 @@ func CancelDeliveryOrder(id uint, userID *uint) error {
 				_ = invsvc.AppendOIVL(tx, oitm.ItemCode, oitm.ItemName, "", oitm.DfltWh,
 					"DO_CANCEL", doDate, int(do.ID),
 					invQty, 0, oitm.AvgPrice, cancelUID)
+			}
+
+			// Reverse the COGS JE that was posted at ConfirmDeliveryOrder time (if one exists)
+			var cogsJE models.JournalEntry
+			if err := tx.Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).
+				First(&cogsJE).Error; err == nil {
+				if _, err = accounting.ReverseJournalEntry(tx, &cogsJE, nil, userID); err != nil {
+					return fmt.Errorf("reverse COGS JE: %w", err)
+				}
 			}
 		}
 
@@ -1216,6 +1229,10 @@ func CancelCollection(id uint, userID *uint) error {
 			if newPaid < 0 {
 				newPaid = 0
 			}
+			newCollected := so.AmountCollected - soApplied
+			if newCollected < 0 {
+				newCollected = 0
+			}
 			newStatus := "Unpaid"
 			if newPaid >= so.GrandTotal {
 				newStatus = "Paid"
@@ -1223,10 +1240,10 @@ func CancelCollection(id uint, userID *uint) error {
 				newStatus = "Partial"
 			}
 			if err := tx.Model(&so).Updates(map[string]interface{}{
-				"amount_paid":       newPaid,
-				"amount_collected":  gorm.Expr("GREATEST(0, amount_collected - ?)", soApplied),
-				"payment_status":    newStatus,
-				"updated_by_id":     userID,
+				"amount_paid":      newPaid,
+				"amount_collected": newCollected,
+				"payment_status":   newStatus,
+				"updated_by_id":    userID,
 			}).Error; err != nil {
 				return fmt.Errorf("restore sales order %d: %w", soID, err)
 			}

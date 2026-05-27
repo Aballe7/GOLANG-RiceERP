@@ -632,8 +632,430 @@ func TestConfirmDeliveryOrder_NoCOGSWhenAvgPriceIsZero(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// Cancel Delivery Order
+// ─────────────────────────────────────────────
+
+// TestCancelDeliveryOrder_DraftBecomeCancelled verifies that cancelling a Draft DO
+// sets its status to Cancelled and leaves the parent SO Open (no stock was moved).
+func TestCancelDeliveryOrder_DraftBecomeCancelled(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-04-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID: &soItemID, SKU: "RICE-001", Unit: "bag",
+			QuantityOrdered: 100, QuantityDelivered: 100, PricePerUnit: 100,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "Draft", do.Status)
+
+	require.NoError(t, CancelDeliveryOrder(do.ID, nil))
+
+	do, _ = GetDeliveryOrder(do.ID)
+	require.Equal(t, "Cancelled", do.Status)
+
+	// SO stays Open — no stock was confirmed out
+	so, _ = GetSalesOrder(so.ID)
+	require.Equal(t, "Open", so.DocStatus)
+}
+
+// TestCancelDeliveryOrder_CannotCancelTwice verifies that cancelling an already-cancelled
+// DO returns an error.
+func TestCancelDeliveryOrder_CannotCancelTwice(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+	do, _ := CreateDeliveryOrder(
+		so.ID, "2025-04-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID: &soItemID, SKU: "RICE-001", Unit: "bag",
+			QuantityOrdered: 100, QuantityDelivered: 100, PricePerUnit: 100,
+		}},
+		nil,
+	)
+	require.NoError(t, CancelDeliveryOrder(do.ID, nil))
+	require.Error(t, CancelDeliveryOrder(do.ID, nil))
+}
+
+// TestCancelDeliveryOrder_DeliveredRestoresOpenQtyAndReopensesSO verifies that
+// cancelling a Delivered DO restores the SO item open_qty and reopens a Closed SO.
+func TestCancelDeliveryOrder_DeliveredRestoresOpenQtyAndReopensesSO(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	do, so := confirmSampleDO(t) // 100 bags; SO is now Closed
+
+	require.Equal(t, "Closed", so.DocStatus)
+	require.Equal(t, 0.0, so.Items[0].OpenQty)
+
+	require.NoError(t, CancelDeliveryOrder(do.ID, nil))
+
+	do, _ = GetDeliveryOrder(do.ID)
+	require.Equal(t, "Cancelled", do.Status)
+
+	so, _ = GetSalesOrder(so.ID)
+	require.Equal(t, "Open", so.DocStatus, "SO must be reopened after DO cancel")
+	require.Equal(t, 100.0, so.Items[0].OpenQty, "open_qty must be restored to original quantity")
+}
+
+// TestCancelDeliveryOrder_BlockedWhenARInvoiceExists verifies that a Delivered DO
+// cannot be cancelled once an AR Invoice has been raised against it.
+func TestCancelDeliveryOrder_BlockedWhenARInvoiceExists(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	_, do, _ := invoiceSampleDO(t)
+
+	err := CancelDeliveryOrder(do.ID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AR invoice")
+}
+
+// TestCancelDeliveryOrder_ReversesCogsJournalEntry verifies that cancelling a Delivered
+// DO (which had a COGS JE posted) marks the original JE as REVERSED and creates a
+// reversal JE with swapped debits/credits.
+func TestCancelDeliveryOrder_ReversesCogsJournalEntry(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+	testutil.SeedOITM(t, "RICE-001", "Milled Rice", 80.0) // triggers COGS JE at confirm
+
+	do, _ := confirmSampleDO(t)
+
+	// COGS JE must have been posted by ConfirmDeliveryOrder
+	var cogsJE models.JournalEntry
+	require.NoError(t, db.DB.
+		Where("source_type = 'DELIVERY_ORDER' AND source_id = ?", do.ID).
+		First(&cogsJE).Error, "COGS JE must exist before cancel")
+	require.Equal(t, "POSTED", cogsJE.Status)
+
+	require.NoError(t, CancelDeliveryOrder(do.ID, nil))
+
+	// Original JE must now be REVERSED
+	require.NoError(t, db.DB.First(&cogsJE, cogsJE.ID).Error)
+	require.Equal(t, "REVERSED", cogsJE.Status, "COGS JE must be reversed on DO cancel")
+
+	// A reversal JE must exist and be balanced
+	var revJE models.JournalEntry
+	require.NoError(t, db.DB.
+		Where("is_reversal = 1 AND reversed_entry_id = ?", cogsJE.ID).
+		First(&revJE).Error, "reversal JE must be created")
+
+	var lines []models.JournalEntryLine
+	require.NoError(t, db.DB.Where("journal_entry_id = ?", revJE.ID).Find(&lines).Error)
+	require.Len(t, lines, 2)
+
+	var totalDr, totalCr float64
+	for _, l := range lines {
+		if l.Debit != nil {
+			totalDr += *l.Debit
+		}
+		if l.Credit != nil {
+			totalCr += *l.Credit
+		}
+	}
+	require.InDelta(t, totalDr, totalCr, 0.005, "reversal JE must balance")
+	require.InDelta(t, 100.0*80.0, totalDr, 0.005, "reversal amount must equal original COGS")
+}
+
+// ─────────────────────────────────────────────
+// Cancel AR Invoice
+// ─────────────────────────────────────────────
+
+// TestCancelARInvoice_SetsStatusAndReversesJE verifies that cancelling an Open AR Invoice
+// sets its status to Cancelled and posts a reversal of the original AR JE.
+func TestCancelARInvoice_SetsStatusAndReversesJE(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+	require.Equal(t, "Open", inv.Status)
+
+	// Find the AR JE posted by CreateARInvoice
+	var arJE models.JournalEntry
+	require.NoError(t, db.DB.
+		Where("source_type = 'AR_INVOICE' AND source_id = ?", inv.ID).
+		First(&arJE).Error)
+	require.Equal(t, "POSTED", arJE.Status)
+
+	require.NoError(t, CancelARInvoice(inv.ID, nil))
+
+	// Invoice is Cancelled
+	inv2, _ := GetARInvoice(inv.ID)
+	require.Equal(t, "Cancelled", inv2.Status)
+
+	// Original AR JE must be REVERSED
+	require.NoError(t, db.DB.First(&arJE, arJE.ID).Error)
+	require.Equal(t, "REVERSED", arJE.Status)
+}
+
+// TestCancelARInvoice_CannotCancelTwice verifies that cancelling an already-cancelled
+// AR Invoice returns an error.
+func TestCancelARInvoice_CannotCancelTwice(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+	require.NoError(t, CancelARInvoice(inv.ID, nil))
+	require.Error(t, CancelARInvoice(inv.ID, nil))
+}
+
+// TestCancelARInvoice_BlockedWhenCollectionApplied verifies that an AR Invoice with any
+// amount_collected > 0 cannot be cancelled directly — the collection must be reversed first.
+func TestCancelARInvoice_BlockedWhenCollectionApplied(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+
+	// Apply a partial payment
+	_, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 3_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	err = CancelARInvoice(inv.ID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "collections applied")
+}
+
+// TestCancelARInvoice_ReversesAmountInvoicedOnSO verifies that cancelling an AR Invoice
+// decrements SO.amount_invoiced back to zero.
+func TestCancelARInvoice_ReversesAmountInvoicedOnSO(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	const total = 10_000.0
+	inv, _, so := invoiceSampleDO(t)
+
+	// SO.amount_invoiced must reflect the invoice
+	so, _ = GetSalesOrder(so.ID)
+	require.InDelta(t, total, so.AmountInvoiced, 0.005, "amount_invoiced must be set after CreateARInvoice")
+
+	require.NoError(t, CancelARInvoice(inv.ID, nil))
+
+	so, _ = GetSalesOrder(so.ID)
+	require.InDelta(t, 0.0, so.AmountInvoiced, 0.005, "amount_invoiced must return to 0 after cancel")
+}
+
+// ─────────────────────────────────────────────
+// Cancel Collection
+// ─────────────────────────────────────────────
+
+// TestCancelCollection_RestoresARInvoiceToOpen verifies that cancelling a full-payment
+// collection sets the AR Invoice back to Open with amount_collected = 0.
+func TestCancelCollection_RestoresARInvoiceToOpen(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+
+	col, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 10_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	inv2, _ := GetARInvoice(inv.ID)
+	require.Equal(t, "Paid", inv2.Status)
+
+	require.NoError(t, CancelCollection(col.ID, nil))
+
+	inv3, _ := GetARInvoice(inv.ID)
+	require.Equal(t, "Open", inv3.Status, "AR Invoice must return to Open after collection cancel")
+	require.InDelta(t, 0.0, inv3.AmountCollected, 0.005, "amount_collected must be zeroed")
+}
+
+// TestCancelCollection_ReversesJournalEntry verifies that cancelling a Posted collection
+// marks its JE as REVERSED and creates a balancing reversal JE.
+func TestCancelCollection_ReversesJournalEntry(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+
+	col, _ := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 10_000}},
+		nil,
+	)
+
+	var colJE models.JournalEntry
+	require.NoError(t, db.DB.
+		Where("source_type = 'COLLECTION' AND source_id = ?", col.ID).
+		First(&colJE).Error)
+	require.Equal(t, "POSTED", colJE.Status)
+
+	require.NoError(t, CancelCollection(col.ID, nil))
+
+	require.NoError(t, db.DB.First(&colJE, colJE.ID).Error)
+	require.Equal(t, "REVERSED", colJE.Status, "collection JE must be reversed on cancel")
+
+	// Reversal JE must exist
+	var revCount int64
+	db.DB.Model(&models.JournalEntry{}).
+		Where("is_reversal = 1 AND reversed_entry_id = ?", colJE.ID).
+		Count(&revCount)
+	require.Equal(t, int64(1), revCount)
+}
+
+// TestCancelCollection_RestoresSalesOrderPaymentStatus verifies that cancelling a full
+// collection restores SO.payment_status to Unpaid and SO.amount_paid to 0.
+func TestCancelCollection_RestoresSalesOrderPaymentStatus(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, so := invoiceSampleDO(t)
+
+	col, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 10_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	so, _ = GetSalesOrder(so.ID)
+	require.Equal(t, "Paid", so.PaymentStatus)
+
+	require.NoError(t, CancelCollection(col.ID, nil))
+
+	so, _ = GetSalesOrder(so.ID)
+	require.Equal(t, "Unpaid", so.PaymentStatus, "payment_status must revert to Unpaid")
+	require.InDelta(t, 0.0, so.AmountPaid, 0.005, "amount_paid must revert to 0")
+}
+
+// TestCancelCollection_CannotCancelTwice verifies that cancelling an already-cancelled
+// collection returns an error.
+func TestCancelCollection_CannotCancelTwice(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+	col, _ := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 10_000}},
+		nil,
+	)
+	require.NoError(t, CancelCollection(col.ID, nil))
+	require.Error(t, CancelCollection(col.ID, nil))
+}
+
+// TestCancelCollection_PartialCancelLeavesInvoicePartial verifies that cancelling one
+// of two partial payments leaves the AR Invoice in Partial status (not Open) because
+// the other payment still stands.
+func TestCancelCollection_PartialCancelLeavesInvoicePartial(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t) // ₱10,000 invoice
+
+	// First payment: ₱6,000
+	col1, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 6_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	// Second payment: ₱4,000 — tips invoice to Paid
+	_, err = CreateCollection(
+		"2025-04-05",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 4_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	inv2, _ := GetARInvoice(inv.ID)
+	require.Equal(t, "Paid", inv2.Status)
+
+	// Cancel only the first collection (₱6,000)
+	require.NoError(t, CancelCollection(col1.ID, nil))
+
+	// ₱4,000 still applied — invoice should be Partial, not Open
+	inv3, _ := GetARInvoice(inv.ID)
+	require.Equal(t, "Partial", inv3.Status, "cancelling one of two payments must leave invoice Partial")
+	require.InDelta(t, 4_000.0, inv3.AmountCollected, 0.005)
+}
+
+// ─────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────
+
+// confirmSampleDO submits the sample SO and confirms a full delivery of all 100 bags.
+// Returns the confirmed DeliveryOrder and a freshly-loaded SalesOrder.
+// Callers must call testutil.SetupDB before this; SeedSalesAccounting is optional
+// (no COGS JE is posted unless SeedOITM is also called).
+func confirmSampleDO(t *testing.T) (*models.DeliveryOrder, *models.SalesOrder) {
+	t.Helper()
+	so, err := createSampleSO(t)
+	require.NoError(t, err)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-04-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID:  &soItemID,
+			SKU:               "RICE-001",
+			Unit:              "bag",
+			QuantityOrdered:   100,
+			QuantityDelivered: 100,
+			PricePerUnit:      100,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NoError(t, ConfirmDeliveryOrder(do.ID, nil))
+
+	do, _ = GetDeliveryOrder(do.ID)
+	so, _ = GetSalesOrder(so.ID)
+	return do, so
+}
+
+// invoiceSampleDO confirms a full delivery then raises an AR Invoice against it.
+// Returns the invoice, the confirmed DO, and the SO.
+// Requires SeedSalesAccounting to be called before this (AR Invoice posts a JE).
+func invoiceSampleDO(t *testing.T) (*models.ARInvoice, *models.DeliveryOrder, *models.SalesOrder) {
+	t.Helper()
+	do, so := confirmSampleDO(t)
+
+	inv, err := CreateARInvoice(
+		[]uint{do.ID},
+		nil, "Test Customer", "", "",
+		"2025-04-03", "30d", "", nil,
+		[]models.ARInvoiceItem{{
+			SKU: "RICE-001", Unit: "bag",
+			Quantity: 100, PricePerUnit: 100,
+			DeliveryOrderID: &do.ID,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	do, _ = GetDeliveryOrder(do.ID)
+	so, _ = GetSalesOrder(so.ID)
+	return inv, do, so
+}
 
 // createSampleSO creates a Draft Sales Order with one line: 100 bags × ₱100 = ₱10,000.
 // The SO is NOT submitted; call SubmitSalesOrder separately when needed.

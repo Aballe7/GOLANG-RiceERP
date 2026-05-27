@@ -102,6 +102,26 @@ func TestCreateSalesOrder_DocNumberIsUnique(t *testing.T) {
 	require.NotEqual(t, so1.SalesOrderNumber, so2.SalesOrderNumber, "every SO must get a distinct number")
 }
 
+// TestCreateSalesOrder_ItemInNonSalesCategoryIsBlocked verifies that an item
+// whose OITB category has for_sales = false is rejected at SO creation time.
+func TestCreateSalesOrder_ItemInNonSalesCategoryIsBlocked(t *testing.T) {
+	testutil.SetupDB(t)
+
+	grp := testutil.SeedOITB(t, "Industrial Products", false) // for_sales = false
+	testutil.SeedOITMInGroup(t, "MACHINE-001", "Milling Machine", 0.0, grp)
+
+	_, err := CreateSalesOrder(
+		"2025-01-01",
+		nil, "Test Customer", "", "", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "MACHINE-001", Unit: "unit", Quantity: 1, PricePerUnit: 100_000, LineTotal: 100_000},
+		},
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Industrial Products", "error must name the blocked category")
+}
+
 // ─────────────────────────────────────────────
 // Sales Order — status transitions
 // ─────────────────────────────────────────────
@@ -131,6 +151,22 @@ func TestSubmitSalesOrder_CannotSubmitTwice(t *testing.T) {
 	require.Contains(t, err.Error(), "Draft", "error should mention required status")
 }
 
+// TestSubmitSalesOrder_IncrementsIsCommited verifies that submitting a Draft SO
+// increments OITM.is_commited by the ordered quantity (1:1, no UoM conversion
+// when uom_entry = 0 — ConvertToInventoryQty returns qty unchanged).
+func TestSubmitSalesOrder_IncrementsIsCommited(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedOITM(t, "RICE-001", "Milled Rice", 80.0) // is_commited = 0 initially
+
+	so, err := createSampleSO(t) // 100 bags × ₱100
+	require.NoError(t, err)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+
+	var oitm models.OITM
+	require.NoError(t, db.DB.Where("item_code = ?", "RICE-001").First(&oitm).Error)
+	require.Equal(t, 100.0, oitm.IsCommited, "is_commited must equal the ordered quantity after Submit")
+}
+
 func TestCancelSalesOrder_FromDraft(t *testing.T) {
 	testutil.SetupDB(t)
 
@@ -149,6 +185,42 @@ func TestCancelSalesOrder_CannotCancelTwice(t *testing.T) {
 
 	err := CancelSalesOrder(so.ID, nil)
 	require.Error(t, err)
+}
+
+// TestCancelSalesOrder_BlockedWhenClosed verifies that a Closed SO (fully
+// delivered) cannot be cancelled — the service must return a "closed" error.
+func TestCancelSalesOrder_BlockedWhenClosed(t *testing.T) {
+	testutil.SetupDB(t)
+
+	// confirmSampleDO delivers all 100 bags → auto-closes the SO
+	_, so := confirmSampleDO(t)
+	require.Equal(t, "Closed", so.DocStatus)
+
+	err := CancelSalesOrder(so.ID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "closed", "error must explain that Closed SOs cannot be cancelled")
+}
+
+// TestCancelSalesOrder_ReleasesIsCommitedOnOpenCancel verifies the full
+// commit/release round-trip: Submit increments is_commited; cancelling the
+// Open SO decrements it back to zero.
+func TestCancelSalesOrder_ReleasesIsCommitedOnOpenCancel(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedOITM(t, "RICE-001", "Milled Rice", 80.0) // is_commited = 0
+
+	so, _ := createSampleSO(t) // 100 bags
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+
+	// Verify increment
+	var oitm models.OITM
+	require.NoError(t, db.DB.Where("item_code = ?", "RICE-001").First(&oitm).Error)
+	require.Equal(t, 100.0, oitm.IsCommited, "is_commited must be 100 after Submit")
+
+	// Cancel — must release the commitment
+	require.NoError(t, CancelSalesOrder(so.ID, nil))
+
+	require.NoError(t, db.DB.Where("item_code = ?", "RICE-001").First(&oitm).Error)
+	require.Equal(t, 0.0, oitm.IsCommited, "is_commited must return to 0 when Open SO is cancelled")
 }
 
 func TestCancelSalesOrder_BlockedWhenDeliveryOrderExists(t *testing.T) {
@@ -570,6 +642,76 @@ func TestTwoPartialCollectionsThenPaid(t *testing.T) {
 	inv3, _ := GetARInvoice(inv.ID)
 	require.Equal(t, "Paid", inv3.Status)
 	require.InDelta(t, total, inv3.AmountCollected, 0.005)
+}
+
+// ─────────────────────────────────────────────
+// Confirm Delivery Order — additional gap tests
+// ─────────────────────────────────────────────
+
+// TestConfirmDeliveryOrder_CannotConfirmTwice verifies that a Delivered DO
+// rejects a second ConfirmDeliveryOrder call with an "already Delivered" error.
+func TestConfirmDeliveryOrder_CannotConfirmTwice(t *testing.T) {
+	testutil.SetupDB(t)
+
+	do, _ := confirmSampleDO(t) // status = Delivered
+
+	err := ConfirmDeliveryOrder(do.ID, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already Delivered")
+}
+
+// ─────────────────────────────────────────────
+// Create AR Invoice — additional gap tests
+// ─────────────────────────────────────────────
+
+// TestCreateARInvoice_RequiresDeliveredDO verifies that CreateARInvoice rejects
+// a Draft DO — only "Delivered" DOs may be invoiced.
+func TestCreateARInvoice_RequiresDeliveredDO(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	so, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil))
+	so, _ = GetSalesOrder(so.ID)
+	soItemID := so.Items[0].ID
+
+	do, err := CreateDeliveryOrder(
+		so.ID, "2025-01-02", "Driver", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID: &soItemID, SKU: "RICE-001", Unit: "bag",
+			QuantityOrdered: 100, QuantityDelivered: 100, PricePerUnit: 100,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "Draft", do.Status)
+
+	// DO is still Draft — AR Invoice must be rejected
+	_, err = CreateARInvoice(
+		[]uint{do.ID},
+		nil, "Test Customer", "", "",
+		"2025-01-03", "30d", "", nil,
+		[]models.ARInvoiceItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 100, PricePerUnit: 100},
+		},
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not Delivered", "error must state the DO status requirement")
+}
+
+// TestCreateARInvoice_AmountInvoicedRollup verifies that CreateARInvoice
+// increments both SO.amount_invoiced and DO.amount_invoiced by the invoice total.
+func TestCreateARInvoice_AmountInvoicedRollup(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, do, so := invoiceSampleDO(t) // ₱10,000 invoice; helper reloads DO and SO
+
+	require.InDelta(t, inv.TotalAmount, so.AmountInvoiced, 0.005,
+		"SO.amount_invoiced must equal the invoice total")
+	require.InDelta(t, inv.TotalAmount, do.AmountInvoiced, 0.005,
+		"DO.amount_invoiced must equal the invoice total")
 }
 
 // ─────────────────────────────────────────────

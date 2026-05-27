@@ -399,8 +399,12 @@ func CancelSalesOrder(id uint, userID *uint) error {
 				}
 				// Use OpenQty: remaining uncommitted portion (full qty if no DOs confirmed yet)
 				invQty := invsvc.ConvertToInventoryQty(tx, &oitm, uomEntry, item.OpenQty)
+				newCommited := oitm.IsCommited - invQty
+				if newCommited < 0 {
+					newCommited = 0
+				}
 				tx.Model(&models.OITM{}).Where("item_code = ?", oitm.ItemCode).
-					UpdateColumn("is_commited", gorm.Expr("GREATEST(0, is_commited - ?)", invQty))
+					UpdateColumn("is_commited", newCommited)
 			}
 		}
 

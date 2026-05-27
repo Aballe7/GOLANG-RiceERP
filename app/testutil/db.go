@@ -97,6 +97,42 @@ func SeedOITM(t *testing.T, itemCode, itemName string, avgPrice float64) string 
 	return itemCode
 }
 
+// SeedOITB inserts an item category (OITB) row and returns its auto-assigned
+// itms_grp_cod.  forSales controls whether items in this category may appear
+// on Sales Orders (CreateSalesOrder validates this before saving).
+// Raw SQL is used so callers don't need every GORM model field in the DDL.
+func SeedOITB(t *testing.T, name string, forSales bool) int {
+	t.Helper()
+	forSalesInt := 0
+	if forSales {
+		forSalesInt = 1
+	}
+	require.NoError(t, db.DB.Exec(
+		`INSERT INTO oitb (itms_grp_nam, is_active, for_sales, for_purchasing, for_inventory)
+		 VALUES (?, 1, ?, 1, 1)`,
+		name, forSalesInt,
+	).Error)
+	var id int
+	require.NoError(t, db.DB.Raw(
+		"SELECT itms_grp_cod FROM oitb WHERE itms_grp_nam = ?", name,
+	).Scan(&id).Error)
+	return id
+}
+
+// SeedOITMInGroup inserts a minimal OITM row belonging to the specified
+// itms_grp_cod category.  Use alongside SeedOITB when a test needs to verify
+// category-visibility guards (e.g. for_sales = false blocks SO creation).
+// Returns itemCode for convenient chaining.
+func SeedOITMInGroup(t *testing.T, itemCode, itemName string, avgPrice float64, grpCod int) string {
+	t.Helper()
+	require.NoError(t, db.DB.Exec(
+		`INSERT INTO oitm (item_code, item_name, avg_price, on_hand, itms_grp_cod, sell_item, valid_for)
+		 VALUES (?, ?, ?, 1000, ?, 'Y', 'Y')`,
+		itemCode, itemName, avgPrice, grpCod,
+	).Error)
+	return itemCode
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level seed bundles
 // ─────────────────────────────────────────────────────────────────────────────

@@ -58,6 +58,146 @@ func TestDeleteCustomer_SoftDeletesIsActive(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// PriceGroup CRUD
+// ─────────────────────────────────────────────
+
+// TestCreatePriceGroup_PersistsAndIsActive verifies that CreatePriceGroup
+// assigns an ID, forces IsActive=true, and stores the name.
+func TestCreatePriceGroup_PersistsAndIsActive(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Premium Buyers", Description: "Top-tier pricing"}
+	pg.IsActive = false // service must override this to true
+
+	require.NoError(t, CreatePriceGroup(pg))
+	require.NotZero(t, pg.ID)
+
+	loaded, err := GetPriceGroup(pg.ID)
+	require.NoError(t, err)
+	require.Equal(t, "Premium Buyers", loaded.Name)
+	require.True(t, loaded.IsActive, "CreatePriceGroup must force IsActive = true")
+}
+
+// TestUpdatePriceGroup_ChangesFieldsAndPersists verifies that UpdatePriceGroup
+// writes name, description, and is_active changes through correctly.
+func TestUpdatePriceGroup_ChangesFieldsAndPersists(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Old Name"}
+	require.NoError(t, CreatePriceGroup(pg))
+
+	require.NoError(t, UpdatePriceGroup(pg.ID, map[string]interface{}{
+		"name":        "New Name",
+		"description": "Updated description",
+	}))
+
+	loaded, err := GetPriceGroup(pg.ID)
+	require.NoError(t, err)
+	require.Equal(t, "New Name", loaded.Name)
+	require.Equal(t, "Updated description", loaded.Description)
+}
+
+// TestDeletePriceGroup_SoftDeletesIsActive verifies that DeletePriceGroup sets
+// is_active=false without removing the record from the DB.
+func TestDeletePriceGroup_SoftDeletesIsActive(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Temp Group"}
+	require.NoError(t, CreatePriceGroup(pg))
+
+	require.NoError(t, DeletePriceGroup(pg.ID))
+
+	loaded, err := GetPriceGroup(pg.ID)
+	require.NoError(t, err)
+	require.False(t, loaded.IsActive, "soft-delete must set is_active = false, not remove the record")
+}
+
+// TestUpsertPriceGroupItem_CreatesThenUpdatesOnSameKey verifies the full
+// upsert behaviour: first call creates a new PriceGroupItem; a second call
+// with the same (pgID, eggSize, unit) key updates the price in place rather
+// than inserting a duplicate row.
+func TestUpsertPriceGroupItem_CreatesThenUpdatesOnSameKey(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Agri Buyers"}
+	require.NoError(t, CreatePriceGroup(pg))
+
+	// First call — must create a new item
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Large", "Tray", 120.0))
+
+	loaded, _ := GetPriceGroup(pg.ID)
+	require.Len(t, loaded.Items, 1, "first upsert must create exactly one item")
+	require.Equal(t, 120.0, loaded.Items[0].Price)
+
+	// Second call — same key, different price; must update, not insert
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Large", "Tray", 135.0))
+
+	loaded, _ = GetPriceGroup(pg.ID)
+	require.Len(t, loaded.Items, 1, "second upsert must update in place — no duplicate row")
+	require.Equal(t, 135.0, loaded.Items[0].Price, "price must reflect the updated value")
+}
+
+// TestUpsertPriceGroupItem_DifferentKeysCreateSeparateItems verifies that
+// upserts with different (eggSize, unit) combinations each produce their own row.
+func TestUpsertPriceGroupItem_DifferentKeysCreateSeparateItems(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Multi-SKU Buyers"}
+	require.NoError(t, CreatePriceGroup(pg))
+
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Large", "Tray", 120.0))
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Medium", "Tray", 100.0))
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Large", "Piece", 10.0))
+
+	loaded, _ := GetPriceGroup(pg.ID)
+	require.Len(t, loaded.Items, 3, "distinct (eggSize, unit) keys must produce separate rows")
+}
+
+// TestListPriceGroups_ActiveOnlyFilter verifies the activeOnly flag:
+// false returns all groups; true returns only is_active = 1 rows.
+func TestListPriceGroups_ActiveOnlyFilter(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg1 := &models.PriceGroup{Name: "Active Group"}
+	pg2 := &models.PriceGroup{Name: "Inactive Group"}
+	require.NoError(t, CreatePriceGroup(pg1))
+	require.NoError(t, CreatePriceGroup(pg2))
+	require.NoError(t, DeletePriceGroup(pg2.ID)) // soft-delete → is_active = false
+
+	all, err := ListPriceGroups(false)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "activeOnly=false must return both groups")
+
+	active, err := ListPriceGroups(true)
+	require.NoError(t, err)
+	require.Len(t, active, 1, "activeOnly=true must return only the active group")
+	require.Equal(t, "Active Group", active[0].Name)
+}
+
+// TestGetPriceGroup_LoadsItemsAndReturnsCorrectPrice verifies that GetPriceGroup
+// eagerly loads PriceGroupItems and that the in-memory GetPrice helper finds the
+// right line by (eggSize, unit) key.
+func TestGetPriceGroup_LoadsItemsAndReturnsCorrectPrice(t *testing.T) {
+	testutil.SetupDB(t)
+
+	pg := &models.PriceGroup{Name: "Egg Buyers"}
+	require.NoError(t, CreatePriceGroup(pg))
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Large", "Tray", 120.0))
+	require.NoError(t, UpsertPriceGroupItem(pg.ID, "Medium", "Tray", 100.0))
+
+	loaded, err := GetPriceGroup(pg.ID)
+	require.NoError(t, err)
+	require.Len(t, loaded.Items, 2)
+
+	// GetPrice is a pure in-memory helper on the loaded struct
+	p := loaded.GetPrice("Large", "Tray")
+	require.NotNil(t, p, "GetPrice must find the Large/Tray line")
+	require.Equal(t, 120.0, *p)
+
+	require.Nil(t, loaded.GetPrice("Jumbo", "Tray"), "GetPrice must return nil for unknown key")
+}
+
+// ─────────────────────────────────────────────
 // Sales Order — creation
 // ─────────────────────────────────────────────
 

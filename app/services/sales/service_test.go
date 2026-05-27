@@ -1403,6 +1403,218 @@ func TestCancelCollection_PartialCancelLeavesInvoicePartial(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// List and Get — read-path coverage
+// ─────────────────────────────────────────────
+
+// TestListCustomers_ActiveOnlyFilter verifies the activeOnly flag mirrors the
+// same pattern as ListPriceGroups: false returns all rows; true returns only
+// is_active = 1.
+func TestListCustomers_ActiveOnlyFilter(t *testing.T) {
+	testutil.SetupDB(t)
+
+	c1 := &models.Customer{Name: "Buyer Alpha"}
+	c2 := &models.Customer{Name: "Buyer Beta"}
+	require.NoError(t, CreateCustomer(c1))
+	require.NoError(t, CreateCustomer(c2))
+	require.NoError(t, DeleteCustomer(c2.ID)) // soft-delete
+
+	all, err := ListCustomers(false)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "activeOnly=false must return both customers")
+
+	active, err := ListCustomers(true)
+	require.NoError(t, err)
+	require.Len(t, active, 1, "activeOnly=true must return only the active customer")
+	require.Equal(t, "Buyer Alpha", active[0].Name)
+}
+
+// TestListCustomers_OrderedByName verifies that results are sorted
+// alphabetically by name regardless of insertion order.
+func TestListCustomers_OrderedByName(t *testing.T) {
+	testutil.SetupDB(t)
+
+	require.NoError(t, CreateCustomer(&models.Customer{Name: "Zorro Farms"}))
+	require.NoError(t, CreateCustomer(&models.Customer{Name: "Alpha Agri"}))
+	require.NoError(t, CreateCustomer(&models.Customer{Name: "Midland Rice"}))
+
+	list, err := ListCustomers(false)
+	require.NoError(t, err)
+	require.Len(t, list, 3)
+	require.Equal(t, "Alpha Agri",   list[0].Name)
+	require.Equal(t, "Midland Rice", list[1].Name)
+	require.Equal(t, "Zorro Farms",  list[2].Name)
+}
+
+// TestListSalesOrders_ReturnsNewestFirst verifies ORDER BY id DESC so the most
+// recently created SO is always first in the slice.
+func TestListSalesOrders_ReturnsNewestFirst(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so1, _ := createSampleSO(t)
+	so2, _ := createSampleSO(t)
+
+	list, err := ListSalesOrders()
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, so2.ID, list[0].ID, "newest SO must be first in the list")
+	require.Equal(t, so1.ID, list[1].ID)
+}
+
+// TestListDeliveryOrders_FilterBySalesOrderID verifies that passing soID > 0
+// returns only DOs for that SO, while soID = 0 returns all DOs.
+func TestListDeliveryOrders_FilterBySalesOrderID(t *testing.T) {
+	testutil.SetupDB(t)
+
+	// SO 1 with one Draft DO
+	so1, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so1.ID, nil))
+	so1, _ = GetSalesOrder(so1.ID)
+	item1ID := so1.Items[0].ID
+	_, err := CreateDeliveryOrder(
+		so1.ID, "2025-01-02", "Driver A", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID: &item1ID, SKU: "RICE-001", Unit: "bag",
+			QuantityOrdered: 50, QuantityDelivered: 50, PricePerUnit: 100,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	// SO 2 with one Draft DO
+	so2, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so2.ID, nil))
+	so2, _ = GetSalesOrder(so2.ID)
+	item2ID := so2.Items[0].ID
+	_, err = CreateDeliveryOrder(
+		so2.ID, "2025-01-03", "Driver B", "",
+		[]models.DeliveryOrderItem{{
+			SalesOrderItemID: &item2ID, SKU: "RICE-001", Unit: "bag",
+			QuantityOrdered: 60, QuantityDelivered: 60, PricePerUnit: 100,
+		}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	all, err := ListDeliveryOrders(0)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "soID=0 must return all DOs")
+
+	filtered, err := ListDeliveryOrders(so1.ID)
+	require.NoError(t, err)
+	require.Len(t, filtered, 1, "soID filter must return only the DO for that SO")
+	require.Equal(t, so1.ID, filtered[0].SalesOrderID)
+}
+
+// TestListARInvoices_FilterByStatus verifies that the Status filter narrows
+// results to invoices in the matching state.
+func TestListARInvoices_FilterByStatus(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t) // status = Open
+	require.NoError(t, CancelARInvoice(inv.ID, nil))
+
+	open, err := ListARInvoices(ARInvoiceFilters{Status: "Open"})
+	require.NoError(t, err)
+	require.Empty(t, open, "no Open invoices after cancel")
+
+	cancelled, err := ListARInvoices(ARInvoiceFilters{Status: "Cancelled"})
+	require.NoError(t, err)
+	require.Len(t, cancelled, 1)
+	require.Equal(t, inv.ID, cancelled[0].ID)
+}
+
+// TestListARInvoices_FilterBySalesOrderID verifies that invoices can be
+// narrowed to those linked to a specific SO.
+func TestListARInvoices_FilterBySalesOrderID(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv1, _, so := invoiceSampleDO(t) // linked to `so`
+
+	// Second invoice with no SO link (standalone — no delivery orders)
+	inv2, err := CreateARInvoice(
+		nil,
+		nil, "Other Buyer", "", "",
+		"2025-05-01", "30d", "", nil,
+		[]models.ARInvoiceItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 50, PricePerUnit: 100},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	_ = inv2
+
+	// No filter → both
+	all, err := ListARInvoices(ARInvoiceFilters{})
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	// SO filter → only inv1
+	bySOID, err := ListARInvoices(ARInvoiceFilters{SalesOrderID: &so.ID})
+	require.NoError(t, err)
+	require.Len(t, bySOID, 1)
+	require.Equal(t, inv1.ID, bySOID[0].ID)
+}
+
+// TestGetCollection_LoadsLinesAndARInvoice verifies that GetCollection eagerly
+// loads CollectionLines and each line's associated ARInvoice.
+func TestGetCollection_LoadsLinesAndARInvoice(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t)
+
+	col, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 10_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	loaded, err := GetCollection(col.ID)
+	require.NoError(t, err)
+	require.Equal(t, col.ID, loaded.ID)
+	require.Equal(t, "Posted", loaded.Status)
+	require.Len(t, loaded.Lines, 1, "must have one settlement line")
+	require.NotNil(t, loaded.Lines[0].ARInvoice, "settlement line must preload the AR Invoice")
+	require.Equal(t, inv.ID, loaded.Lines[0].ARInvoice.ID)
+	require.InDelta(t, 10_000.0, loaded.Lines[0].AmountApplied, 0.005)
+}
+
+// TestListCollections_ReturnsNewestFirst verifies ORDER BY id DESC so the most
+// recently created Collection is first in the returned slice.
+func TestListCollections_ReturnsNewestFirst(t *testing.T) {
+	testutil.SetupDB(t)
+	testutil.SeedSalesAccounting(t)
+
+	inv, _, _ := invoiceSampleDO(t) // ₱10,000 invoice
+
+	col1, err := CreateCollection(
+		"2025-04-04",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 6_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	col2, err := CreateCollection(
+		"2025-04-05",
+		nil, "Test Customer", "Cash", "", "",
+		[]CollectionLineInput{{ARInvoiceID: inv.ID, AmountApplied: 4_000}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	list, err := ListCollections()
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, col2.ID, list[0].ID, "newest collection must be first")
+	require.Equal(t, col1.ID, list[1].ID)
+}
+
+// ─────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────
 

@@ -179,6 +179,130 @@ func TestCancelSalesOrder_BlockedWhenDeliveryOrderExists(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────
+// Sales Order — update
+// ─────────────────────────────────────────────
+
+// TestUpdateSalesOrder_ReplacesItemsAndRecalculatesGrandTotal verifies that
+// updating a Draft SO removes all existing line items and replaces them with
+// the new set, recomputing grand_total from the new lines.
+func TestUpdateSalesOrder_ReplacesItemsAndRecalculatesGrandTotal(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, err := createSampleSO(t) // 100 bags × ₱100 = ₱10,000
+	require.NoError(t, err)
+	require.Equal(t, 10_000.0, so.GrandTotal)
+
+	// Reload to get DB-assigned version (default 1)
+	so, _ = GetSalesOrder(so.ID)
+
+	updated, err := UpdateSalesOrder(
+		so.ID,
+		so.Version,
+		nil, "Updated Customer", "", "",
+		"2025-02-01", "Cash", "15d", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag",  Quantity: 50, PricePerUnit: 120, LineTotal: 6_000},
+			{SKU: "BRAN-001", Unit: "sack", Quantity: 20, PricePerUnit: 80,  LineTotal: 1_600},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.InDelta(t, 7_600.0, updated.GrandTotal, 0.005, "grand_total must equal sum of new lines")
+	require.Len(t, updated.Items, 2, "old single item must be replaced by 2 new items")
+	// open_qty is reset to quantity for each new line
+	for _, item := range updated.Items {
+		require.Equal(t, item.Quantity, item.OpenQty, "open_qty must match quantity on each new line")
+	}
+}
+
+// TestUpdateSalesOrder_BlockedForNonDraft verifies that an Open (submitted) SO
+// cannot be edited — the service must return an error mentioning "cannot be edited".
+func TestUpdateSalesOrder_BlockedForNonDraft(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, _ := createSampleSO(t)
+	require.NoError(t, SubmitSalesOrder(so.ID, nil)) // Draft → Open
+	so, _ = GetSalesOrder(so.ID)
+
+	_, err := UpdateSalesOrder(
+		so.ID,
+		so.Version,
+		nil, "Should Not Save", "", "",
+		"2025-02-01", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 50, PricePerUnit: 100, LineTotal: 5_000},
+		},
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot be edited", "error must explain why the edit is blocked")
+}
+
+// TestUpdateSalesOrder_VersionConflict verifies optimistic-lock semantics:
+// after a successful update bumps the version, a second call with the original
+// (now stale) version must be rejected with a "conflict" error.
+func TestUpdateSalesOrder_VersionConflict(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, _ := createSampleSO(t)
+	so, _ = GetSalesOrder(so.ID) // version = 1 from DB default
+
+	// First update — passes with correct version; bumps version to 2
+	_, err := UpdateSalesOrder(
+		so.ID,
+		so.Version, // 1
+		nil, "First Update", "", "",
+		"2025-02-01", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 80, PricePerUnit: 100, LineTotal: 8_000},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	// Second update uses the original stale version — must be rejected
+	_, err = UpdateSalesOrder(
+		so.ID,
+		so.Version, // still 1 — stale after first update
+		nil, "Stale Update", "", "",
+		"2025-02-01", "Cash", "", nil, "",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 60, PricePerUnit: 100, LineTotal: 6_000},
+		},
+		nil,
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "conflict", "stale version must return a conflict error")
+}
+
+// TestUpdateSalesOrder_HeaderFieldsPersisted verifies that customer snapshot,
+// payment method, terms, and notes are all written through correctly.
+func TestUpdateSalesOrder_HeaderFieldsPersisted(t *testing.T) {
+	testutil.SetupDB(t)
+
+	so, _ := createSampleSO(t)
+	so, _ = GetSalesOrder(so.ID)
+
+	updated, err := UpdateSalesOrder(
+		so.ID,
+		so.Version,
+		nil, "New Customer Name", "123 New Street", "09171234567",
+		"2025-06-01", "Bank Transfer", "45d", nil, "urgent order",
+		[]models.SalesOrderItem{
+			{SKU: "RICE-001", Unit: "bag", Quantity: 100, PricePerUnit: 100, LineTotal: 10_000},
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "New Customer Name",  updated.CustomerNameSnapshot)
+	require.Equal(t, "123 New Street",     updated.CustomerAddressSnapshot)
+	require.Equal(t, "09171234567",        updated.CustomerContactSnapshot)
+	require.Equal(t, "Bank Transfer",      updated.PaymentMethod)
+	require.Equal(t, "45d",               updated.Terms)
+	require.Equal(t, "urgent order",       updated.Notes)
+}
+
+// ─────────────────────────────────────────────
 // Delivery Order
 // ─────────────────────────────────────────────
 

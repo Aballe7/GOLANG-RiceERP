@@ -13,6 +13,7 @@ package inventory
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"ricemill/app/db"
 	"ricemill/app/models"
@@ -82,6 +83,15 @@ func upsertOITWOnHand(tx *gorm.DB, itemCode, lineWhs, itemDfltWh string, delta f
 	if whs == "" {
 		whs = "WH01"
 	}
+	// SQLite (used by the integration tests) speaks ON CONFLICT … DO UPDATE rather
+	// than MySQL's ON DUPLICATE KEY UPDATE; branch on the active dialect.
+	if tx.Dialector.Name() == "sqlite" {
+		return tx.Exec(`
+			INSERT INTO oitw (item_code, whs_code, on_hand)
+			VALUES (?, ?, ?)
+			ON CONFLICT(item_code, whs_code) DO UPDATE SET on_hand = oitw.on_hand + ?`,
+			itemCode, whs, delta, delta).Error
+	}
 	return tx.Exec(`
 		INSERT INTO oitw (item_code, whs_code, on_hand)
 		VALUES (?, ?, ?)
@@ -93,6 +103,12 @@ func upsertOITWOnHand(tx *gorm.DB, itemCode, lineWhs, itemDfltWh string, delta f
 // Must be called inside the same DB transaction as the stock update.
 // whsCode fallback mirrors upsertOITWOnHand: lineWhs → itemDfltWh → "WH01".
 func appendOIVL(tx *gorm.DB, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate string, docNum int, inQty, outQty, price float64, createdByID uint) error {
+	return appendOIVLBatch(tx, "", itemCode, itemName, lineWhs, itemDfltWh, transType, docDate, docNum, inQty, outQty, price, createdByID)
+}
+
+// appendOIVLBatch is appendOIVL with a batch/lot number for movements that carry
+// lot traceability (milling receipts, batch-tracked goods receipts).
+func appendOIVLBatch(tx *gorm.DB, batchNo, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate string, docNum int, inQty, outQty, price float64, createdByID uint) error {
 	whs := lineWhs
 	if whs == "" {
 		whs = itemDfltWh
@@ -111,6 +127,7 @@ func appendOIVL(tx *gorm.DB, itemCode, itemName, lineWhs, itemDfltWh, transType,
 		OutQty:      outQty,
 		Price:       price,
 		Value:       (inQty + outQty) * price,
+		BatchNo:     batchNo,
 		CreatedByID: createdByID,
 	}).Error
 }
@@ -155,6 +172,192 @@ func RecalcMovingAvgPrice(tx *gorm.DB, oitm *models.OITM, invQty, invUnitPrice f
 // AppendOIVL is the exported wrapper around appendOIVL for use by other packages.
 func AppendOIVL(tx *gorm.DB, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate string, docNum int, inQty, outQty, price float64, createdByID uint) error {
 	return appendOIVL(tx, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate, docNum, inQty, outQty, price, createdByID)
+}
+
+// AppendOIVLBatch is the exported wrapper around appendOIVLBatch for movements
+// that carry a batch/lot number.
+func AppendOIVLBatch(tx *gorm.DB, batchNo, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate string, docNum int, inQty, outQty, price float64, createdByID uint) error {
+	return appendOIVLBatch(tx, batchNo, itemCode, itemName, lineWhs, itemDfltWh, transType, docDate, docNum, inQty, outQty, price, createdByID)
+}
+
+// BackfillOIVL reconstructs missing stock-ledger (OIVL) rows for documents posted
+// before the OIVL wiring existed. Those documents updated on_hand correctly but
+// left no audit rows, so the Inventory Movement report silently omits them.
+//
+// Covered: Goods Issues (GI), Goods Receipts (GR), confirmed purchase Delivery
+// Receipts (DR), and delivered sales Delivery Orders (DO). Cancelled documents are
+// skipped — their net stock effect is zero and no reversal rows were written
+// historically either. Quantities are exact; prices use the stored line price
+// (converted to per-inventory-unit) as the best available approximation of the
+// historical cost.
+//
+// Idempotent: guarded by a FarmSettings sentinel, and each document is only
+// backfilled if it has NO OIVL rows of its type.
+func BackfillOIVL() error {
+	// v2: v1 matched DR lines by item_code only, missing lines that carry only
+	// the item name. The per-document hasRows guard makes re-running safe.
+	var sentinel models.FarmSettings
+	if db.DB.Where("`key` = ?", "oivl_backfill_v2_done").First(&sentinel).Error == nil {
+		return nil
+	}
+
+	// invUnitPrice converts a line price to per-inventory-unit cost.
+	invUnitPrice := func(qty, price, invQty float64) float64 {
+		if invQty > 0 && qty > 0 {
+			return (qty * price) / invQty
+		}
+		return price
+	}
+
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		hasRows := func(transType string, docNum uint) bool {
+			var n int64
+			tx.Model(&models.OIVL{}).Where("trans_type = ? AND doc_num = ?", transType, docNum).Count(&n)
+			return n > 0
+		}
+		itemByID := func(id uint) (*models.OITM, bool) {
+			var it models.OITM
+			if tx.First(&it, id).Error != nil {
+				return nil, false
+			}
+			return &it, true
+		}
+
+		// ── Goods Issues (out) ────────────────────────────────────────────────
+		var gis []models.GoodsIssue
+		if err := tx.Where("status <> 'Cancelled'").Find(&gis).Error; err != nil {
+			return err
+		}
+		for _, gi := range gis {
+			if hasRows("GI", gi.ID) {
+				continue
+			}
+			var lines []models.GoodsIssueItem
+			tx.Where("goods_issue_id = ?", gi.ID).Find(&lines)
+			for _, l := range lines {
+				it, ok := itemByID(l.ItemID)
+				if !ok {
+					continue
+				}
+				invQty := convertToInventoryQty(tx, it, l.UomEntry, l.Quantity)
+				price := invUnitPrice(l.Quantity, l.Price, invQty)
+				if price == 0 {
+					price = it.AvgPrice
+				}
+				if err := appendOIVL(tx, it.ItemCode, it.ItemName, l.WarehouseCode, it.DfltWh,
+					"GI", gi.PostingDate, int(gi.ID), 0, invQty, price, gi.CreatedByID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// ── Goods Receipts (in) ───────────────────────────────────────────────
+		var grs []models.GoodsReceipt
+		if err := tx.Where("status <> 'Cancelled'").Find(&grs).Error; err != nil {
+			return err
+		}
+		for _, gr := range grs {
+			if hasRows("GR", gr.ID) {
+				continue
+			}
+			var lines []models.GoodsReceiptItem
+			tx.Where("goods_receipt_id = ?", gr.ID).Find(&lines)
+			for _, l := range lines {
+				it, ok := itemByID(l.ItemID)
+				if !ok {
+					continue
+				}
+				invQty := convertToInventoryQty(tx, it, l.UomEntry, l.Quantity)
+				price := invUnitPrice(l.Quantity, l.Price, invQty)
+				if price == 0 {
+					price = it.AvgPrice
+				}
+				if err := appendOIVLBatch(tx, l.BatchNo, it.ItemCode, it.ItemName, l.WarehouseCode, it.DfltWh,
+					"GR", gr.PostingDate, int(gr.ID), invQty, 0, price, gr.CreatedByID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// ── Purchase Delivery Receipts (in; stock posts on Received) ─────────
+		var drs []models.DeliveryReceipt
+		if err := tx.Where("status = 'Received'").Find(&drs).Error; err != nil {
+			return err
+		}
+		for _, dr := range drs {
+			if hasRows("DR", dr.ID) {
+				continue
+			}
+			var lines []models.DeliveryReceiptItem
+			tx.Where("delivery_receipt_id = ?", dr.ID).Find(&lines)
+			for _, l := range lines {
+				// Match like the live confirm path: DR lines may carry only the
+				// item name (item_code empty), so match either column.
+				var it models.OITM
+				if tx.Where("item_code = ? OR item_name = ?", l.ItemCode, l.Description).First(&it).Error != nil {
+					continue
+				}
+				uomEntry := l.UomEntry
+				if uomEntry == 0 {
+					uomEntry = it.IUoMEntry
+				}
+				invQty := convertToInventoryQty(tx, &it, uomEntry, l.Quantity)
+				price := invUnitPrice(l.Quantity, l.Price, invQty)
+				if price == 0 {
+					price = it.AvgPrice
+				}
+				var createdBy uint
+				if dr.ReceivedByID != nil {
+					createdBy = *dr.ReceivedByID
+				}
+				if err := appendOIVL(tx, it.ItemCode, it.ItemName, l.WarehouseCode, it.DfltWh,
+					"DR", dr.PostingDate.Format("2006-01-02"), int(dr.ID), invQty, 0, price, createdBy); err != nil {
+					return err
+				}
+			}
+		}
+
+		// ── Sales Delivery Orders (out; stock posts on Delivered) ────────────
+		var dos []models.DeliveryOrder
+		if err := tx.Where("status = 'Delivered'").Find(&dos).Error; err != nil {
+			return err
+		}
+		for _, do := range dos {
+			if hasRows("DO", do.ID) {
+				continue
+			}
+			var items []models.DeliveryOrderItem
+			tx.Where("delivery_order_id = ?", do.ID).Find(&items)
+			for _, l := range items {
+				var it models.OITM
+				if tx.Where("item_code = ? OR item_name = ?", l.SKU, l.SKU).First(&it).Error != nil {
+					continue
+				}
+				uomEntry := l.UomEntry
+				if uomEntry == 0 {
+					uomEntry = it.IUoMEntry
+				}
+				invQty := convertToInventoryQty(tx, &it, uomEntry, l.QuantityDelivered)
+				var createdBy uint
+				if do.CreatedByID != nil {
+					createdBy = *do.CreatedByID
+				}
+				// Cost side of a delivery is the moving average (COGS), not the
+				// sale price — current avg is the best available approximation.
+				if err := appendOIVL(tx, it.ItemCode, it.ItemName, "", it.DfltWh,
+					"DO", do.Date.Format("2006-01-02"), int(do.ID), 0, invQty, it.AvgPrice, createdBy); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("backfill OIVL: %w", err)
+	}
+
+	db.DB.Save(&models.FarmSettings{Key: "oivl_backfill_v2_done", Value: time.Now().Format(time.RFC3339)})
+	return nil
 }
 
 // attachUoMFields fills the in-memory BaseUoM, SalesUoM, and PurchUoM fields for each item.
@@ -303,13 +506,19 @@ func GetItemMaster(id uint) (*models.OITM, error) {
 
 // upsertITM12ForItem syncs ITM12 rows (I/S/P) from the item's three UoM entry fields.
 func upsertITM12ForItem(itemCode string, iUomEntry, sUomEntry, pUomEntry uint) {
+	UpsertITM12ForItemTx(db.DB, itemCode, iUomEntry, sUomEntry, pUomEntry)
+}
+
+// UpsertITM12ForItemTx is the transaction-aware version of upsertITM12ForItem,
+// for callers (e.g. the Excel importer) that create items inside a transaction.
+func UpsertITM12ForItemTx(tx *gorm.DB, itemCode string, iUomEntry, sUomEntry, pUomEntry uint) {
 	type row struct {
 		entry   uint
 		uomType string
 	}
 	for _, r := range []row{{iUomEntry, "I"}, {sUomEntry, "S"}, {pUomEntry, "P"}} {
 		if r.entry > 0 {
-			db.DB.Save(&models.ITM12{ItemCode: itemCode, UomEntry: r.entry, UomType: r.uomType})
+			tx.Save(&models.ITM12{ItemCode: itemCode, UomEntry: r.entry, UomType: r.uomType})
 		}
 	}
 }
@@ -439,10 +648,15 @@ func DeleteItemCategory(id int) error {
 
 // GetItemCategoryName returns the group name string for a given ItmsGrpCod.
 // Used to populate the CategoryName virtual field for backward compatibility
-// with production service snapshot fields.
-func GetItemCategoryName(grpCod int) string {
+// with production service snapshot fields. Pass the caller's transaction when
+// invoked inside one so the read runs on the same connection.
+func GetItemCategoryName(grpCod int, conn ...*gorm.DB) string {
+	c := db.DB
+	if len(conn) > 0 && conn[0] != nil {
+		c = conn[0]
+	}
 	var cat models.OITB
-	if err := db.DB.Select("itms_grp_nam").First(&cat, grpCod).Error; err != nil {
+	if err := c.Select("itms_grp_nam").First(&cat, grpCod).Error; err != nil {
 		return ""
 	}
 	return cat.ItmsGrpNam
@@ -575,6 +789,7 @@ type GRLineInput struct {
 	WarehouseCode string  `json:"warehouse_code"`
 	AccountCode   string  `json:"account_code"`
 	Project       string  `json:"project"`
+	BatchNo       string  `json:"batch_no"` // optional lot number carried to the line and OIVL
 }
 
 // CreateGoodsReceiptRequest is the DTO used to create a new GoodsReceipt.
@@ -603,7 +818,26 @@ func GetGoodsReceipt(id uint) (*models.GoodsReceipt, error) {
 }
 
 // CreateGoodsReceipt inserts a new GoodsReceipt and updates on_hand for each item.
+// It opens its own transaction; callers that need the GR to participate in a larger
+// atomic unit of work should call CreateGoodsReceiptTx with a shared *gorm.DB instead.
 func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.GoodsReceipt, error) {
+	var header *models.GoodsReceipt
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		gr, e := CreateGoodsReceiptTx(tx, req, userID)
+		header = gr
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+// CreateGoodsReceiptTx performs the full goods-receipt posting inside the supplied
+// transaction: header + lines + on_hand / OITW / OIVL movements and moving-average
+// recompute. Any error returned rolls back the caller's transaction, keeping the
+// stock ledger and any journal entries posted alongside it in lock-step.
+func CreateGoodsReceiptTx(tx *gorm.DB, req CreateGoodsReceiptRequest, userID *uint) (*models.GoodsReceipt, error) {
 	if len(req.Lines) == 0 {
 		return nil, errors.New("at least one line is required")
 	}
@@ -616,7 +850,7 @@ func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.Go
 		}
 	}
 
-	grNum, err := docnumber.Svc.NextGRNumber()
+	grNum, err := docnumber.Svc.NextGRNumber(tx)
 	if err != nil {
 		return nil, fmt.Errorf("generate GR number: %w", err)
 	}
@@ -627,7 +861,7 @@ func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.Go
 		itemIDs[i] = l.ItemID
 	}
 	var items []models.OITM
-	if err := db.DB.Where("id IN ?", itemIDs).Find(&items).Error; err != nil {
+	if err := tx.Where("id IN ?", itemIDs).Find(&items).Error; err != nil {
 		return nil, fmt.Errorf("fetch items: %w", err)
 	}
 	itemMap := make(map[uint]models.OITM, len(items))
@@ -662,6 +896,7 @@ func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.Go
 			WarehouseCode: l.WarehouseCode,
 			AccountCode:   l.AccountCode,
 			Project:       l.Project,
+			BatchNo:       l.BatchNo,
 		})
 	}
 
@@ -679,43 +914,37 @@ func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.Go
 		CreatedByID: createdByID,
 	}
 
-	txErr := db.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&header).Error; err != nil {
-			return err
+	if err := tx.Create(&header).Error; err != nil {
+		return nil, err
+	}
+	for i := range lines {
+		lines[i].GoodsReceiptID = header.ID
+		if err := tx.Create(&lines[i]).Error; err != nil {
+			return nil, err
 		}
-		for i := range lines {
-			lines[i].GoodsReceiptID = header.ID
-			if err := tx.Create(&lines[i]).Error; err != nil {
-				return err
-			}
-			// Increase on_hand (converted to inventory UoM)
-			it := itemMap[lines[i].ItemID]
-			invQty := convertToInventoryQty(tx, &it, lines[i].UomEntry, lines[i].Quantity)
+		// Increase on_hand (converted to inventory UoM)
+		it := itemMap[lines[i].ItemID]
+		invQty := convertToInventoryQty(tx, &it, lines[i].UomEntry, lines[i].Quantity)
 
-			// Convert line price to per-inventory-unit cost, then recalc moving average
-			invUnitPrice := lines[i].Price
-			if invQty > 0 && lines[i].Quantity > 0 {
-				invUnitPrice = (lines[i].Quantity * lines[i].Price) / invQty
-			}
-			newAvg := RecalcMovingAvgPrice(tx, &it, invQty, invUnitPrice)
-
-			if err := tx.Model(&models.OITM{}).Where("id = ?", lines[i].ItemID).
-				UpdateColumn("on_hand", gorm.Expr("on_hand + ?", invQty)).Error; err != nil {
-				return err
-			}
-			// Mirror update to OITW (per-warehouse stock)
-			if err := upsertOITWOnHand(tx, it.ItemCode, lines[i].WarehouseCode, it.DfltWh, invQty); err != nil {
-				return err
-			}
-			// Append OIVL audit row — use new avg as the post-receipt unit cost
-			if err := appendOIVL(tx, it.ItemCode, it.ItemName, lines[i].WarehouseCode, it.DfltWh, "GR", header.PostingDate, int(header.ID), invQty, 0, newAvg, createdByID); err != nil {
-				return err
-			}
+		// Convert line price to per-inventory-unit cost, then recalc moving average
+		invUnitPrice := lines[i].Price
+		if invQty > 0 && lines[i].Quantity > 0 {
+			invUnitPrice = (lines[i].Quantity * lines[i].Price) / invQty
 		}
-		return nil
-	})
-	if txErr != nil {
-		return nil, txErr
+		newAvg := RecalcMovingAvgPrice(tx, &it, invQty, invUnitPrice)
+
+		if err := tx.Model(&models.OITM{}).Where("id = ?", lines[i].ItemID).
+			UpdateColumn("on_hand", gorm.Expr("on_hand + ?", invQty)).Error; err != nil {
+			return nil, err
+		}
+		// Mirror update to OITW (per-warehouse stock)
+		if err := upsertOITWOnHand(tx, it.ItemCode, lines[i].WarehouseCode, it.DfltWh, invQty); err != nil {
+			return nil, err
+		}
+		// Append OIVL audit row — use new avg as the post-receipt unit cost
+		if err := appendOIVLBatch(tx, lines[i].BatchNo, it.ItemCode, it.ItemName, lines[i].WarehouseCode, it.DfltWh, "GR", header.PostingDate, int(header.ID), invQty, 0, newAvg, createdByID); err != nil {
+			return nil, err
+		}
 	}
 
 	header.Lines = lines
@@ -723,9 +952,20 @@ func CreateGoodsReceipt(req CreateGoodsReceiptRequest, userID *uint) (*models.Go
 }
 
 // CancelGoodsReceipt sets status to Cancelled and reverses on_hand for each line.
+// Opens its own transaction; use CancelGoodsReceiptTx to participate in a larger one.
 func CancelGoodsReceipt(id uint, userID *uint) error {
-	gr, err := GetGoodsReceipt(id)
-	if err != nil {
+	return db.DB.Transaction(func(tx *gorm.DB) error {
+		return CancelGoodsReceiptTx(tx, id, userID)
+	})
+}
+
+// CancelGoodsReceiptTx reverses a goods receipt inside the supplied transaction.
+func CancelGoodsReceiptTx(tx *gorm.DB, id uint, userID *uint) error {
+	var gr models.GoodsReceipt
+	if err := tx.First(&gr, id).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("goods_receipt_id = ?", id).Order("line_num").Find(&gr.Lines).Error; err != nil {
 		return err
 	}
 	if gr.Status == "Cancelled" {
@@ -737,32 +977,30 @@ func CancelGoodsReceipt(id uint, userID *uint) error {
 		cancelledByID = *userID
 	}
 
-	return db.DB.Transaction(func(tx *gorm.DB) error {
-		for _, line := range gr.Lines {
-			var item models.OITM
-			if err := tx.First(&item, line.ItemID).Error; err != nil {
-				return err
-			}
-			invQty := convertToInventoryQty(tx, &item, line.UomEntry, line.Quantity)
-			if err := tx.Model(&models.OITM{}).Where("id = ?", line.ItemID).
-				UpdateColumn("on_hand", gorm.Expr("on_hand - ?", invQty)).Error; err != nil {
-				return err
-			}
-			// Mirror reversal to OITW (per-warehouse stock)
-			if err := upsertOITWOnHand(tx, item.ItemCode, line.WarehouseCode, item.DfltWh, -invQty); err != nil {
-				return err
-			}
-			// Append OIVL audit row (offsetting entry)
-			if err := appendOIVL(tx, item.ItemCode, item.ItemName, line.WarehouseCode, item.DfltWh, "GR_CANCEL", gr.PostingDate, int(gr.ID), 0, invQty, item.AvgPrice, cancelledByID); err != nil {
-				return err
-			}
+	for _, line := range gr.Lines {
+		var item models.OITM
+		if err := tx.First(&item, line.ItemID).Error; err != nil {
+			return err
 		}
-		return tx.Model(&models.GoodsReceipt{}).Where("id = ?", id).
-			Updates(map[string]interface{}{
-				"status":        "Cancelled",
-				"updated_by_id": cancelledByID,
-			}).Error
-	})
+		invQty := convertToInventoryQty(tx, &item, line.UomEntry, line.Quantity)
+		if err := tx.Model(&models.OITM{}).Where("id = ?", line.ItemID).
+			UpdateColumn("on_hand", gorm.Expr("on_hand - ?", invQty)).Error; err != nil {
+			return err
+		}
+		// Mirror reversal to OITW (per-warehouse stock)
+		if err := upsertOITWOnHand(tx, item.ItemCode, line.WarehouseCode, item.DfltWh, -invQty); err != nil {
+			return err
+		}
+		// Append OIVL audit row (offsetting entry)
+		if err := appendOIVL(tx, item.ItemCode, item.ItemName, line.WarehouseCode, item.DfltWh, "GR_CANCEL", gr.PostingDate, int(gr.ID), 0, invQty, item.AvgPrice, cancelledByID); err != nil {
+			return err
+		}
+	}
+	return tx.Model(&models.GoodsReceipt{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":        "Cancelled",
+			"updated_by_id": cancelledByID,
+		}).Error
 }
 
 // ─────────────────────────────────────────────
@@ -806,7 +1044,30 @@ func GetGoodsIssue(id uint) (*models.GoodsIssue, error) {
 }
 
 // CreateGoodsIssue inserts a new GoodsIssue and decrements on_hand for each item.
+// Opens its own transaction; use CreateGoodsIssueTx to participate in a larger one.
 func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsIssue, error) {
+	var header *models.GoodsIssue
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		gi, e := CreateGoodsIssueTx(tx, req, userID)
+		header = gi
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+// CreateGoodsIssueTx performs the full goods-issue posting inside the supplied
+// transaction: header + lines + on_hand / OITW / OIVL movements.
+//
+// The on_hand decrement is written as a conditional UPDATE (WHERE on_hand >= qty)
+// and the affected-row count is checked. This makes the stock check and the
+// decrement a single atomic step, so two concurrent issues can never drive stock
+// negative — the loser's UPDATE matches zero rows and the whole transaction rolls
+// back. Any error returned rolls back the caller's transaction, keeping the stock
+// ledger and any journal entries posted alongside it consistent.
+func CreateGoodsIssueTx(tx *gorm.DB, req CreateGoodsIssueRequest, userID *uint) (*models.GoodsIssue, error) {
 	if len(req.Lines) == 0 {
 		return nil, errors.New("at least one line is required")
 	}
@@ -825,7 +1086,7 @@ func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsI
 		itemIDs[i] = l.ItemID
 	}
 	var items []models.OITM
-	if err := db.DB.Where("id IN ?", itemIDs).Find(&items).Error; err != nil {
+	if err := tx.Where("id IN ?", itemIDs).Find(&items).Error; err != nil {
 		return nil, fmt.Errorf("fetch items: %w", err)
 	}
 	itemMap := make(map[uint]models.OITM, len(items))
@@ -833,23 +1094,7 @@ func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsI
 		itemMap[it.ID] = it
 	}
 
-	// Validate sufficient stock before issuing (compare in inventory UoM)
-	for _, l := range req.Lines {
-		it, ok := itemMap[l.ItemID]
-		if !ok {
-			return nil, fmt.Errorf("item ID %d not found", l.ItemID)
-		}
-		uomEntry := l.UomEntry
-		if uomEntry == 0 {
-			uomEntry = it.IUoMEntry
-		}
-		invQty := convertToInventoryQty(db.DB, &it, uomEntry, l.Quantity)
-		if it.OnHand < invQty {
-			return nil, fmt.Errorf("insufficient stock for item %s: on hand %.3f, requested %.3f", it.ItemCode, it.OnHand, invQty)
-		}
-	}
-
-	giNum, err := docnumber.Svc.NextGINumber()
+	giNum, err := docnumber.Svc.NextGINumber(tx)
 	if err != nil {
 		return nil, fmt.Errorf("generate GI number: %w", err)
 	}
@@ -858,7 +1103,10 @@ func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsI
 	var docTotal float64
 	lines := make([]models.GoodsIssueItem, 0, len(req.Lines))
 	for i, l := range req.Lines {
-		it := itemMap[l.ItemID]
+		it, ok := itemMap[l.ItemID]
+		if !ok {
+			return nil, fmt.Errorf("item ID %d not found", l.ItemID)
+		}
 		uomEntry := l.UomEntry
 		if uomEntry == 0 {
 			uomEntry = it.IUoMEntry
@@ -895,35 +1143,35 @@ func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsI
 		CreatedByID: createdByID,
 	}
 
-	txErr := db.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&header).Error; err != nil {
-			return err
+	if err := tx.Create(&header).Error; err != nil {
+		return nil, err
+	}
+	for i := range lines {
+		lines[i].GoodsIssueID = header.ID
+		if err := tx.Create(&lines[i]).Error; err != nil {
+			return nil, err
 		}
-		for i := range lines {
-			lines[i].GoodsIssueID = header.ID
-			if err := tx.Create(&lines[i]).Error; err != nil {
-				return err
-			}
-			// Decrease on_hand (converted to inventory UoM)
-			it := itemMap[lines[i].ItemID]
-			invQty := convertToInventoryQty(tx, &it, lines[i].UomEntry, lines[i].Quantity)
-			if err := tx.Model(&models.OITM{}).Where("id = ?", lines[i].ItemID).
-				UpdateColumn("on_hand", gorm.Expr("on_hand - ?", invQty)).Error; err != nil {
-				return err
-			}
-			// Mirror update to OITW (per-warehouse stock)
-			if err := upsertOITWOnHand(tx, it.ItemCode, lines[i].WarehouseCode, it.DfltWh, -invQty); err != nil {
-				return err
-			}
-			// Append OIVL audit row
-			if err := appendOIVL(tx, it.ItemCode, it.ItemName, lines[i].WarehouseCode, it.DfltWh, "GI", header.PostingDate, int(header.ID), 0, invQty, it.AvgPrice, createdByID); err != nil {
-				return err
-			}
+		// Decrease on_hand (converted to inventory UoM) with an atomic guard:
+		// the UPDATE only matches when enough stock is on hand.
+		it := itemMap[lines[i].ItemID]
+		invQty := convertToInventoryQty(tx, &it, lines[i].UomEntry, lines[i].Quantity)
+		res := tx.Model(&models.OITM{}).
+			Where("id = ? AND on_hand >= ?", lines[i].ItemID, invQty).
+			UpdateColumn("on_hand", gorm.Expr("on_hand - ?", invQty))
+		if res.Error != nil {
+			return nil, res.Error
 		}
-		return nil
-	})
-	if txErr != nil {
-		return nil, txErr
+		if res.RowsAffected == 0 {
+			return nil, fmt.Errorf("insufficient stock for item %s: requested %.3f", it.ItemCode, invQty)
+		}
+		// Mirror update to OITW (per-warehouse stock)
+		if err := upsertOITWOnHand(tx, it.ItemCode, lines[i].WarehouseCode, it.DfltWh, -invQty); err != nil {
+			return nil, err
+		}
+		// Append OIVL audit row
+		if err := appendOIVL(tx, it.ItemCode, it.ItemName, lines[i].WarehouseCode, it.DfltWh, "GI", header.PostingDate, int(header.ID), 0, invQty, it.AvgPrice, createdByID); err != nil {
+			return nil, err
+		}
 	}
 
 	header.Lines = lines
@@ -931,9 +1179,20 @@ func CreateGoodsIssue(req CreateGoodsIssueRequest, userID *uint) (*models.GoodsI
 }
 
 // CancelGoodsIssue sets status to Cancelled and restores on_hand for each line.
+// Opens its own transaction; use CancelGoodsIssueTx to participate in a larger one.
 func CancelGoodsIssue(id uint, userID *uint) error {
-	gi, err := GetGoodsIssue(id)
-	if err != nil {
+	return db.DB.Transaction(func(tx *gorm.DB) error {
+		return CancelGoodsIssueTx(tx, id, userID)
+	})
+}
+
+// CancelGoodsIssueTx reverses a goods issue inside the supplied transaction.
+func CancelGoodsIssueTx(tx *gorm.DB, id uint, userID *uint) error {
+	var gi models.GoodsIssue
+	if err := tx.First(&gi, id).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("goods_issue_id = ?", id).Order("line_num").Find(&gi.Lines).Error; err != nil {
 		return err
 	}
 	if gi.Status == "Cancelled" {
@@ -945,32 +1204,30 @@ func CancelGoodsIssue(id uint, userID *uint) error {
 		cancelledByID = *userID
 	}
 
-	return db.DB.Transaction(func(tx *gorm.DB) error {
-		for _, line := range gi.Lines {
-			var item models.OITM
-			if err := tx.First(&item, line.ItemID).Error; err != nil {
-				return err
-			}
-			invQty := convertToInventoryQty(tx, &item, line.UomEntry, line.Quantity)
-			if err := tx.Model(&models.OITM{}).Where("id = ?", line.ItemID).
-				UpdateColumn("on_hand", gorm.Expr("on_hand + ?", invQty)).Error; err != nil {
-				return err
-			}
-			// Mirror reversal to OITW (per-warehouse stock)
-			if err := upsertOITWOnHand(tx, item.ItemCode, line.WarehouseCode, item.DfltWh, invQty); err != nil {
-				return err
-			}
-			// Append OIVL audit row (offsetting entry)
-			if err := appendOIVL(tx, item.ItemCode, item.ItemName, line.WarehouseCode, item.DfltWh, "GI_CANCEL", gi.PostingDate, int(gi.ID), invQty, 0, item.AvgPrice, cancelledByID); err != nil {
-				return err
-			}
+	for _, line := range gi.Lines {
+		var item models.OITM
+		if err := tx.First(&item, line.ItemID).Error; err != nil {
+			return err
 		}
-		return tx.Model(&models.GoodsIssue{}).Where("id = ?", id).
-			Updates(map[string]interface{}{
-				"status":        "Cancelled",
-				"updated_by_id": cancelledByID,
-			}).Error
-	})
+		invQty := convertToInventoryQty(tx, &item, line.UomEntry, line.Quantity)
+		if err := tx.Model(&models.OITM{}).Where("id = ?", line.ItemID).
+			UpdateColumn("on_hand", gorm.Expr("on_hand + ?", invQty)).Error; err != nil {
+			return err
+		}
+		// Mirror reversal to OITW (per-warehouse stock)
+		if err := upsertOITWOnHand(tx, item.ItemCode, line.WarehouseCode, item.DfltWh, invQty); err != nil {
+			return err
+		}
+		// Append OIVL audit row (offsetting entry)
+		if err := appendOIVL(tx, item.ItemCode, item.ItemName, line.WarehouseCode, item.DfltWh, "GI_CANCEL", gi.PostingDate, int(gi.ID), invQty, 0, item.AvgPrice, cancelledByID); err != nil {
+			return err
+		}
+	}
+	return tx.Model(&models.GoodsIssue{}).Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":        "Cancelled",
+			"updated_by_id": cancelledByID,
+		}).Error
 }
 
 // ─────────────────────────────────────────────

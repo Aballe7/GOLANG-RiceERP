@@ -6,4 +6,4 @@ max_idle_conns = 5
 
 [app]
 debug = false
-app_name = "RiceMill"
+app_name = "Fitly"

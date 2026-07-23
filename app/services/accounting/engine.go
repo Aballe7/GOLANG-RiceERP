@@ -55,8 +55,8 @@ func PostJournalEntry(tx *gorm.DB, params PostJEParams) (*models.JournalEntry, e
 		)
 	}
 
-	// Generate JE number (mutex-protected)
-	jeNum, err := docnumber.Svc.NextJENumber()
+	// Generate JE number (mutex-protected) on the caller's transaction.
+	jeNum, err := docnumber.Svc.NextJENumber(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate JE number: %w", err)
 	}
@@ -125,7 +125,7 @@ func ReverseJournalEntry(tx *gorm.DB, originalJE *models.JournalEntry, reversalD
 		revDate = *reversalDate
 	}
 
-	jeNum, err := docnumber.Svc.NextJENumber()
+	jeNum, err := docnumber.Svc.NextJENumber(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate reversal JE number: %w", err)
 	}

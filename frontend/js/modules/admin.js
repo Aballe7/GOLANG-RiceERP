@@ -30,12 +30,19 @@ Modules.Admin = {
             <i class="bi bi-clock-history me-1"></i>Audit Log
           </a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link ${active === 'import' ? 'active' : ''}" href="#"
+            onclick="navigate('#/admin/import');return false;">
+            <i class="bi bi-file-earmark-arrow-up me-1"></i>Data Import
+          </a>
+        </li>
       </ul>
     `;
 
     if (active === 'users') await loadUsersView(id, tabBar);
     else if (active === 'settings') await loadFarmSettings(tabBar);
     else if (active === 'audit') await this.loadAuditLog(tabBar);
+    else if (active === 'import') loadDataImport(tabBar);
     else await loadUsersView(id, tabBar);
   },
 
@@ -45,6 +52,7 @@ Modules.Admin = {
 
   reset() {
     _userList = [];
+    _importPreview = null;
   }
 };
 
@@ -444,6 +452,146 @@ function auditActionColor(action) {
   };
   return map[(action || '').toUpperCase()] || 'secondary';
 }
+
+// ── Data Import (Excel master data upload) ────────────────────────────────────
+
+let _importPreview = null;
+
+const IMPORT_TYPES = {
+  items:     { label: 'Item Master',  icon: 'bi-box-seam',
+               hint: 'Creates or updates items by item_code. Categories are auto-created; UoM group / inventory / purchase / sales UoM columns have dropdowns sourced from your UoM masters and must match existing codes. Stock quantities are not imported — use Goods Receipts for opening stock.' },
+  customers: { label: 'Customers',    icon: 'bi-people',
+               hint: 'Creates or updates customers by exact name. customer_type must be Account or Walk-in.' },
+  suppliers: { label: 'Suppliers',    icon: 'bi-truck',
+               hint: 'Creates or updates suppliers by exact name. Imported suppliers are created as active (approved).' },
+};
+
+function loadDataImport(tabBar) {
+  _importPreview = null;
+  showView(wrapAdmin(tabBar, `
+    <div class="card border-0 shadow-sm mb-4" style="max-width:900px">
+      <div class="card-body">
+        <div class="fw-bold mb-1"><i class="bi bi-file-earmark-arrow-up me-2 text-primary"></i>Upload Master Data from Excel</div>
+        <div class="text-muted small mb-3">
+          Download the template, fill it in, then choose the file to preview.
+          Nothing is saved until you confirm the import.
+        </div>
+        <div class="row g-3 align-items-end">
+          <div class="col-md-4">
+            <label class="form-label fw-bold small">Data Type</label>
+            <select id="importType" class="form-select" onchange="importOnTypeChange()">
+              ${Object.entries(IMPORT_TYPES).map(([k, t]) =>
+                `<option value="${k}">${t.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="col-auto">
+            <button class="btn btn-outline-primary" onclick="importDownloadTemplate()">
+              <i class="bi bi-download me-1"></i>Download Template
+            </button>
+          </div>
+          <div class="col-auto">
+            <button class="btn btn-primary" onclick="importChooseFile()">
+              <i class="bi bi-folder2-open me-1"></i>Choose Excel File…
+            </button>
+          </div>
+        </div>
+        <div id="importTypeHint" class="form-text mt-2">${IMPORT_TYPES.items.hint}</div>
+      </div>
+    </div>
+    <div id="importPreviewArea"></div>
+  `));
+}
+
+window.importOnTypeChange = function() {
+  const type = document.getElementById('importType').value;
+  document.getElementById('importTypeHint').textContent = IMPORT_TYPES[type]?.hint || '';
+  document.getElementById('importPreviewArea').innerHTML = '';
+  _importPreview = null;
+};
+
+window.importDownloadTemplate = async function() {
+  const type = document.getElementById('importType').value;
+  await api.DownloadImportTemplate(type);
+};
+
+window.importChooseFile = async function() {
+  const type = document.getElementById('importType').value;
+  const preview = await api.PreviewMasterDataImport(type);
+  if (!preview) return; // cancelled or parse error (toast already shown)
+  _importPreview = preview;
+  renderImportPreview(preview);
+};
+
+function importActionBadge(row) {
+  if (row.action === 'create') return '<span class="badge bg-success">Create</span>';
+  if (row.action === 'update') return '<span class="badge bg-primary">Update</span>';
+  return `<span class="badge bg-danger" title="${_esc(row.error || '')}">Error</span>`;
+}
+
+function renderImportPreview(p) {
+  const validCount = p.create_count + p.update_count;
+  const head = p.columns.map(c => `<th class="small">${_esc(c)}</th>`).join('');
+  const body = p.rows.map(r => `
+    <tr class="${r.action === 'error' ? 'table-danger' : ''}">
+      <td class="text-muted small">${r.row_num}</td>
+      <td>${importActionBadge(r)}</td>
+      ${r.values.map(v => `<td class="small">${_esc(v || '')}</td>`).join('')}
+      <td class="small text-danger">${_esc(r.error || '')}</td>
+    </tr>`).join('');
+
+  document.getElementById('importPreviewArea').innerHTML = `
+    <div class="card border-0 shadow-sm">
+      <div class="card-header bg-white py-3 d-flex align-items-center gap-3 flex-wrap">
+        <span class="fw-bold"><i class="bi bi-eye me-2"></i>Preview — ${_esc(p.file_name)}</span>
+        <span class="badge bg-success">${p.create_count} to create</span>
+        <span class="badge bg-primary">${p.update_count} to update</span>
+        ${p.error_count ? `<span class="badge bg-danger">${p.error_count} with errors (will be skipped)</span>` : ''}
+        <button class="btn btn-success fw-bold ms-auto" onclick="importCommit()" ${validCount === 0 ? 'disabled' : ''}>
+          <i class="bi bi-check-circle me-1"></i>Import ${validCount} Record${validCount !== 1 ? 's' : ''}
+        </button>
+      </div>
+      <div class="table-responsive" style="max-height:480px">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light" style="position:sticky;top:0">
+            <tr><th class="small">Row</th><th class="small">Action</th>${head}<th class="small">Problem</th></tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+window.importCommit = async function() {
+  if (!_importPreview) return;
+  const p = _importPreview;
+  const validCount = p.create_count + p.update_count;
+  let msg = `Import ${validCount} record(s) into ${IMPORT_TYPES[p.data_type]?.label || p.data_type}?`;
+  if (p.error_count > 0) msg += `\n\n${p.error_count} row(s) with errors will be skipped.`;
+  if (!confirm(msg)) return;
+
+  const result = await api.CommitMasterDataImport(p.data_type, p.file_path);
+  if (!result) return;
+
+  const errList = (result.errors || []).map(e => `<li class="small text-danger">${_esc(e)}</li>`).join('');
+  document.getElementById('importPreviewArea').innerHTML = `
+    <div class="card border-0 shadow-sm" style="max-width:900px">
+      <div class="card-body">
+        <div class="fw-bold text-success mb-2"><i class="bi bi-check-circle me-2"></i>Import complete</div>
+        <div class="d-flex gap-3 mb-2">
+          <span class="badge bg-success fs-6">${result.created} created</span>
+          <span class="badge bg-primary fs-6">${result.updated} updated</span>
+          ${result.skipped ? `<span class="badge bg-warning text-dark fs-6">${result.skipped} skipped</span>` : ''}
+        </div>
+        ${errList ? `<div class="small fw-bold mt-3">Skipped rows:</div><ul class="mb-0">${errList}</ul>` : ''}
+        <button class="btn btn-outline-primary mt-3" onclick="navigate('#/admin/import')">
+          <i class="bi bi-file-earmark-arrow-up me-1"></i>Import Another File
+        </button>
+      </div>
+    </div>
+  `;
+  _importPreview = null;
+};
 
 // ── Layout Helper ─────────────────────────────────────────────────────────────
 

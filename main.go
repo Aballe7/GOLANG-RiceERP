@@ -21,7 +21,7 @@ func main() {
 	a := app.NewApp(defaultConfig)
 
 	err := wails.Run(&options.App{
-		Title:  "RiceMill",
+		Title:  "Fitly",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{

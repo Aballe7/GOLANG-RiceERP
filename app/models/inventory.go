@@ -44,6 +44,7 @@ type GoodsReceiptItem struct {
 	WarehouseCode  string  `gorm:"column:warehouse_code;type:varchar(20)" json:"warehouse_code"`
 	AccountCode    string  `gorm:"column:account_code;type:varchar(20)" json:"account_code"`
 	Project        string  `gorm:"column:project;type:varchar(50)" json:"project"`
+	BatchNo        string  `gorm:"column:batch_no;type:varchar(30);index" json:"batch_no"` // lot traceability (e.g. milling batch)
 }
 
 func (GoodsReceiptItem) TableName() string { return "ign1" }
@@ -356,6 +357,7 @@ type OIVL struct {
 	OutQty      float64   `gorm:"column:out_qty;type:decimal(12,3);default:0" json:"out_qty"`
 	Price       float64   `gorm:"column:price;type:decimal(15,4);default:0" json:"price"`
 	Value       float64   `gorm:"column:value;type:decimal(15,4);default:0" json:"value"`
+	BatchNo     string    `gorm:"column:batch_no;type:varchar(30);index" json:"batch_no"` // lot traceability
 	CreatedByID uint      `gorm:"column:created_by_id;default:0;index" json:"created_by_id"`
 	CreatedAt   time.Time `gorm:"column:created_at;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
 }

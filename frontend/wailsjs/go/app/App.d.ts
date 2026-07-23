@@ -38,6 +38,8 @@ export function ChangePassword(arg1:handlers.ChangePasswordRequest):Promise<hand
 
 export function CloseWorkOrder(arg1:number,arg2:number,arg3:number):Promise<handlers.Response>;
 
+export function CommitMasterDataImport(arg1:string,arg2:string):Promise<handlers.Response>;
+
 export function CompleteMillingOrder(arg1:number,arg2:production.CompleteMillingRequest):Promise<handlers.Response>;
 
 export function ComputeWHT(arg1:handlers.ComputeWHTRequest):Promise<handlers.Response>;
@@ -128,6 +130,8 @@ export function DisposeAsset(arg1:handlers.DisposeAssetRequest):Promise<handlers
 
 export function DownloadBackup(arg1:string):Promise<handlers.Response>;
 
+export function DownloadImportTemplate(arg1:string):Promise<handlers.Response>;
+
 export function ExportBalanceSheetExcel(arg1:string):Promise<handlers.Response>;
 
 export function ExportPnLExcel(arg1:string,arg2:string):Promise<handlers.Response>;
@@ -203,6 +207,8 @@ export function GetItemWarehouseStock(arg1:string):Promise<handlers.Response>;
 export function GetJournalEntry(arg1:number):Promise<handlers.Response>;
 
 export function GetMillingOrder(arg1:number):Promise<handlers.Response>;
+
+export function GetMillingYieldReport():Promise<handlers.Response>;
 
 export function GetNextPONumber():Promise<handlers.Response>;
 
@@ -315,6 +321,8 @@ export function Login(arg1:handlers.LoginRequest):Promise<handlers.Response>;
 export function Logout():Promise<handlers.Response>;
 
 export function PostManualJournalEntry(arg1:handlers.ManualJERequest):Promise<handlers.Response>;
+
+export function PreviewMasterDataImport(arg1:string):Promise<handlers.Response>;
 
 export function RejectSupplier(arg1:number):Promise<handlers.Response>;
 

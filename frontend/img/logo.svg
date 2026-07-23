@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Fitly logo">
+  <circle cx="512" cy="512" r="512" fill="#0d1526"/>
+  <!-- Row 1 -->
+  <rect x="298" y="300" width="140" height="140" rx="28" fill="#4b5fd6"/>
+  <rect x="454" y="300" width="272" height="140" rx="28" fill="#c8cff6"/>
+  <!-- Row 2 -->
+  <rect x="298" y="456" width="272" height="140" rx="28" fill="#2fbd5f"/>
+  <rect x="586" y="456" width="140" height="140" rx="28" fill="#b7f0ca"/>
+  <!-- Row 3 -->
+  <rect x="298" y="612" width="140" height="140" rx="28" fill="#f2990e"/>
+  <rect x="454" y="612" width="272" height="140" rx="28" fill="#f8dd82"/>
+</svg>

@@ -45,13 +45,17 @@ func CreateGLAccount(req CreateGLAccountRequest) Response {
 	if !middleware.Store.IsAdmin() {
 		return unauthorized()
 	}
+	parentID := req.ParentID
+	if parentID == nil {
+		parentID = accounting.ResolveParentByCode(req.Code)
+	}
 	acct := &models.GLAccount{
 		Code:          req.Code,
 		Name:          req.Name,
 		Section:       req.Section,
 		AccountType:   req.AccountType,
 		NormalBalance: req.NormalBalance,
-		ParentID:      req.ParentID,
+		ParentID:      parentID,
 		Description:   req.Description,
 		IsActive:      true,
 		CreatedAt:     time.Now(),

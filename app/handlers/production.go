@@ -98,6 +98,19 @@ func CancelMillingOrder(id uint) Response {
 	return okResponse("Milling order cancelled", mo)
 }
 
+// GetMillingYieldReport returns per-order yield KPIs (recovery %, head rice %,
+// brokens %) for all completed milling/drying orders, for trending.
+func GetMillingYieldReport() Response {
+	if r, ok := checkProduction(); !ok {
+		return r
+	}
+	rows, err := productionsvc.MillingYieldReport()
+	if err != nil {
+		return errResponse(err)
+	}
+	return okResponse("", rows)
+}
+
 // ─────────────────────────────────────────────
 // BOM (OITT / ITT1)
 // ─────────────────────────────────────────────

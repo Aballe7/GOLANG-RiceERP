@@ -26,6 +26,15 @@ type MillingOrder struct {
 	DocTotal         float64   `gorm:"column:doc_total;type:decimal(15,4);default:0" json:"doc_total"` // InputQty × InputUnitCost
 	Remarks          string    `gorm:"column:remarks;type:text" json:"remarks"`
 
+	// Rice-mill operational fields (Part 2 audit). OrderType mirrors OWOR.OrderType
+	// ('M'=Milling, 'D'=Drying); the rest are traceability / quality captures.
+	OrderType      string  `gorm:"-" json:"order_type,omitempty"`
+	BatchNo        string  `gorm:"column:batch_no;type:varchar(30)" json:"batch_no"`
+	MoisturePct    float64 `gorm:"column:moisture_pct;type:decimal(5,2);default:0" json:"moisture_pct"`         // paddy moisture % at intake
+	OutMoisturePct float64 `gorm:"column:out_moisture_pct;type:decimal(5,2);default:0" json:"out_moisture_pct"` // moisture % at completion
+	RejectedQty    float64 `gorm:"-" json:"rejected_qty,omitempty"`                                             // spillage / process loss recorded at completion
+	ConvCost       float64 `gorm:"-" json:"conv_cost,omitempty"`                                                // conversion cost absorbed at completion
+
 	// Set on Start
 	GoodsIssueID     *uint  `gorm:"column:goods_issue_id" json:"goods_issue_id,omitempty"`
 	GoodsIssueNumber string `gorm:"column:goods_issue_number;type:varchar(30)" json:"goods_issue_number"`
@@ -65,6 +74,10 @@ type MillingOrderLine struct {
 	UomEntry uint   `gorm:"column:uom_entry;default:0" json:"uom_entry"`
 	Unit     string `gorm:"column:unit;type:varchar(20)" json:"unit"`
 
+	// OutputType classifies the output for milling KPIs:
+	// H=head rice, B=brokens, Y=by-product (bran/husk); blank=unclassified.
+	OutputType string `gorm:"column:output_type;type:char(1);default:''" json:"output_type"`
+
 	// Set on Complete
 	GoodsReceiptLineID *uint `gorm:"column:goods_receipt_line_id" json:"goods_receipt_line_id,omitempty"`
 }
@@ -73,10 +86,14 @@ func (MillingOrderLine) TableName() string { return "mor1" }
 
 // ─── BOM / Product Tree (OITT / ITT1) ────────────────────────────────────────
 
-// ProductTree is the BOM header. Code must match OITM.ItemCode where MakItem='Y'.
+// ProductTree is the BOM / yield-template header.
+// tree_type='P': production BOM — Code is the finished item (MakItem='Y'), lines are INPUT components.
+// tree_type='M'/'D': milling/drying yield template — Code is the INPUT item (paddy),
+// lines are the expected OUTPUTS per Quantity units of input (e.g. Quantity=100 kg paddy
+// → 62 kg head rice, 8 kg brokens, 10 kg bran, 20 kg husk).
 type ProductTree struct {
 	Code      string           `gorm:"column:code;primaryKey;type:varchar(50)"       json:"code"`
-	TreeType  string           `gorm:"column:tree_type;type:char(1);default:'P'"     json:"tree_type"` // P=Production
+	TreeType  string           `gorm:"column:tree_type;type:char(1);default:'P'"     json:"tree_type"` // P=Production M=Milling template D=Drying template
 	Warehouse string           `gorm:"column:warehouse;type:varchar(10)"              json:"warehouse"`
 	Quantity  float64          `gorm:"column:quantity;type:decimal(12,3);default:1"  json:"quantity"` // batch size
 	Notes     string           `gorm:"column:notes;type:text"                         json:"notes"`
@@ -98,6 +115,7 @@ type ProductTreeLine struct {
 	UomCode     string  `gorm:"column:uom_code;type:varchar(20)"                       json:"uom_code"`
 	UomEntry    uint    `gorm:"column:uom_entry;default:0"                             json:"uom_entry"`
 	Price       float64 `gorm:"column:price;type:decimal(15,4);default:0"              json:"price"`
+	OutputType  string  `gorm:"column:output_type;type:char(1);default:''"             json:"output_type"` // milling templates: H=head rice B=brokens Y=by-product
 }
 
 func (ProductTreeLine) TableName() string { return "itt1" }
@@ -121,9 +139,16 @@ type WorkOrder struct {
 	DueDate     string    `gorm:"column:due_date;type:date"                            json:"due_date"`
 	Status      string    `gorm:"column:status;type:char(1);default:'P'"               json:"status"` // P=Planned R=Released C=Closed L=Cancelled
 	Notes       string    `gorm:"column:notes;type:text"                               json:"notes"`
+
+	// Rice-mill operational fields (Part 2 audit)
+	BatchNo        string  `gorm:"column:batch_no;type:varchar(30);index"               json:"batch_no"`         // lot number: paddy intake → outputs
+	MoisturePct    float64 `gorm:"column:moisture_pct;type:decimal(5,2);default:0"      json:"moisture_pct"`     // input moisture % at intake
+	OutMoisturePct float64 `gorm:"column:out_moisture_pct;type:decimal(5,2);default:0"  json:"out_moisture_pct"` // moisture % at completion
+	ConvCost       float64 `gorm:"column:conv_cost;type:decimal(15,4);default:0"        json:"conv_cost"`        // conversion cost absorbed into WIP at completion
 	CreatedByID uint      `gorm:"column:created_by_id"                                 json:"created_by_id"`
 	UpdatedByID *uint    `gorm:"column:updated_by_id"                                 json:"updated_by_id"`
 	CreatedAt   time.Time `gorm:"column:created_at;default:CURRENT_TIMESTAMP(3)"      json:"created_at"`
+	Version     uint      `gorm:"default:1"                                            json:"version"` // optimistic-lock counter bumped by status claims
 
 	// GR/GI/JE linkage (used by Milling and optionally by Production)
 	GoodsIssueID       *uint  `gorm:"column:goods_issue_id"                                json:"goods_issue_id,omitempty"`
@@ -156,6 +181,7 @@ type WorkOrderLine struct {
 	UomEntry     uint    `gorm:"column:uom_entry;default:0"                             json:"uom_entry"`
 	UomCode      string  `gorm:"column:uom_code;type:varchar(20)"                       json:"uom_code"`
 	Price        float64 `gorm:"column:price;type:decimal(15,4);default:0"              json:"price"`
+	OutputType   string  `gorm:"column:output_type;type:char(1);default:''"             json:"output_type"` // output lines: H=head rice B=brokens Y=by-product
 }
 
 func (WorkOrderLine) TableName() string { return "wor1" }

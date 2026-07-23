@@ -33,6 +33,20 @@ func CreateGLAccount(acct *models.GLAccount) error {
 	return db.DB.Create(acct).Error
 }
 
+// ResolveParentByCode returns the ID of the nearest existing ancestor account
+// for the given account code (walking up the code hierarchy), or nil if none
+// is found. Used to auto-derive a parent when one is not supplied.
+func ResolveParentByCode(code string) *uint {
+	for pc := db.DeriveParentCode(code); pc != ""; pc = db.DeriveParentCode(pc) {
+		var parent models.GLAccount
+		if err := db.DB.Select("id").Where("code = ?", pc).First(&parent).Error; err == nil {
+			id := parent.ID
+			return &id
+		}
+	}
+	return nil
+}
+
 // UpdateGLAccount updates an existing GL account.
 func UpdateGLAccount(id uint, updates map[string]interface{}) error {
 	return db.DB.Model(&models.GLAccount{}).Where("id = ?", id).Updates(updates).Error

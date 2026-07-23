@@ -21,11 +21,13 @@ async function loadMillingOrdersList(tabBar) {
   if (!orders) { showView(`<div class="container-fluid p-4">${tabBar}<div class="alert alert-warning">Failed to load milling orders.</div></div>`); return; }
 
   const rows = orders.length === 0
-    ? `<tr><td colspan="6" class="text-center text-muted py-4">No milling orders yet. <a href="#" onclick="navigate('#/production/milling-orders/new');return false;">Create one</a></td></tr>`
+    ? `<tr><td colspan="8" class="text-center text-muted py-4">No milling orders yet. <a href="#" onclick="navigate('#/production/milling-orders/new');return false;">Create one</a></td></tr>`
     : orders.map(mo => `
         <tr style="cursor:pointer" onclick="navigate('#/production/milling-orders/${mo.id}')">
           <td class="fw-semibold font-monospace small">${mo.mo_number}</td>
           <td class="text-muted small">${formatDate(mo.posting_date)}</td>
+          <td class="small">${mo.order_type === 'D' ? '<span class="badge bg-info text-dark">Drying</span>' : '<span class="badge bg-warning text-dark">Milling</span>'}</td>
+          <td class="text-muted small font-monospace">${mo.batch_no || '—'}</td>
           <td>${mo.input_item_name || '—'}</td>
           <td class="text-end">${formatNumber(mo.input_qty, 3)} ${mo.input_unit || ''}</td>
           <td>${moBadge(mo.status)}</td>
@@ -50,7 +52,7 @@ async function loadMillingOrdersList(tabBar) {
           <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
               <tr>
-                <th>MO #</th><th>Date</th><th>Input Item</th>
+                <th>MO #</th><th>Date</th><th>Process</th><th>Batch</th><th>Input Item</th>
                 <th class="text-end">Input Qty</th><th>Status</th><th></th>
               </tr>
             </thead>
@@ -69,12 +71,22 @@ async function loadMillingOrderDetail(id) {
   if (!mo) { showView('<div class="alert alert-danger">Milling order not found.</div>'); return; }
   _moItemList = items || [];
 
-  const lines = (mo.lines || []).map(l => `
+  const OUT_TYPE_LABEL = { H: 'Head Rice', B: 'Brokens', Y: 'By-product' };
+  const lines = (mo.lines || []).map(l => {
+    const variance = (l.expected_qty > 0 && l.actual_qty > 0)
+      ? ((l.actual_qty - l.expected_qty) / l.expected_qty * 100)
+      : null;
+    const varCls = variance === null ? '' : (variance < 0 ? 'text-danger' : 'text-success');
+    return `
     <tr>
       <td class="text-muted small font-monospace">${l.output_item_code || '—'}</td>
       <td class="fw-semibold">${l.output_item_name || '—'}</td>
+      <td class="small text-muted">${OUT_TYPE_LABEL[l.output_type] || '—'}</td>
+      <td class="text-end text-muted">${l.expected_qty > 0 ? formatNumber(l.expected_qty, 3) : '—'}</td>
       <td class="text-end fw-bold text-success">${formatNumber(l.actual_qty, 3)} ${l.unit || ''}</td>
-    </tr>`).join('');
+      <td class="text-end small ${varCls}">${variance === null ? '—' : (variance > 0 ? '+' : '') + variance.toFixed(1) + '%'}</td>
+    </tr>`;
+  }).join('');
 
   const giLink = mo.goods_issue_number
     ? `<a href="#" onclick="navigate('#/inventory/gi/${mo.goods_issue_id}');return false;" class="text-warning fw-semibold">
@@ -136,6 +148,22 @@ async function loadMillingOrderDetail(id) {
                 <div class="col-7">${formatCurrency(mo.input_unit_cost)}</div>
                 <div class="col-5 text-muted">Total Input Cost</div>
                 <div class="col-7 fw-bold text-warning">${formatCurrency(mo.doc_total)}</div>
+                <div class="col-5 text-muted">Process</div>
+                <div class="col-7">${mo.order_type === 'D' ? 'Drying' : 'Milling'}</div>
+                <div class="col-5 text-muted">Batch / Lot No.</div>
+                <div class="col-7 font-monospace">${mo.batch_no || '—'}</div>
+                ${mo.moisture_pct ? `
+                <div class="col-5 text-muted">Moisture % (intake)</div>
+                <div class="col-7">${formatNumber(mo.moisture_pct, 1)}%</div>` : ''}
+                ${mo.out_moisture_pct ? `
+                <div class="col-5 text-muted">Moisture % (output)</div>
+                <div class="col-7">${formatNumber(mo.out_moisture_pct, 1)}%</div>` : ''}
+                ${mo.rejected_qty ? `
+                <div class="col-5 text-muted">Rejected / Spillage</div>
+                <div class="col-7">${formatNumber(mo.rejected_qty, 3)} ${mo.input_unit || ''}</div>` : ''}
+                ${mo.conv_cost ? `
+                <div class="col-5 text-muted">Conversion Cost Absorbed</div>
+                <div class="col-7">${formatCurrency(mo.conv_cost)}</div>` : ''}
                 ${mo.remarks ? `
                 <div class="col-5 text-muted">Remarks</div>
                 <div class="col-7">${mo.remarks}</div>` : ''}
@@ -166,11 +194,13 @@ async function loadMillingOrderDetail(id) {
           <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
               <tr>
-                <th>Code</th><th>Item</th>
+                <th>Code</th><th>Item</th><th>Type</th>
+                <th class="text-end">Expected Qty</th>
                 <th class="text-end">Actual Qty</th>
+                <th class="text-end">Variance</th>
               </tr>
             </thead>
-            <tbody>${lines || `<tr><td colspan="3" class="text-center text-muted py-3">No output recorded yet — complete the milling order to record output.</td></tr>`}</tbody>
+            <tbody>${lines || `<tr><td colspan="6" class="text-center text-muted py-3">No output lines yet — complete the milling order to record output.</td></tr>`}</tbody>
           </table>
         </div>
       </div>
@@ -211,6 +241,7 @@ async function loadMillingOrderDetail(id) {
               <thead class="table-light">
                 <tr>
                   <th>Output Item</th>
+                  <th style="width:100px" class="text-end">Expected</th>
                   <th style="width:120px">Actual Qty</th>
                   <th style="width:80px">Unit</th>
                   <th style="width:36px"></th>
@@ -218,6 +249,21 @@ async function loadMillingOrderDetail(id) {
               </thead>
               <tbody id="completeOutputLines"></tbody>
             </table>
+
+            <!-- Spillage + moisture capture -->
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label class="form-label small fw-bold">Rejected / Spillage Qty</label>
+                <input type="number" id="moRejectedQty" class="form-control form-control-sm"
+                       min="0" step="0.001" placeholder="0.000" oninput="moUpdateRecovery()">
+                <div class="form-text small">Mass that went in but is not product — recorded as explicit process loss.</div>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small fw-bold">Moisture % (output)</label>
+                <input type="number" id="moOutMoisture" class="form-control form-control-sm"
+                       min="0" max="100" step="0.1" placeholder="e.g. 12.5">
+              </div>
+            </div>
 
             <!-- Recovery Rate (MRR) -->
             <div class="d-flex align-items-center gap-3 mb-3 p-2 rounded bg-light">
@@ -291,6 +337,21 @@ async function loadNewMillingOrderForm() {
               <label class="form-label fw-bold">Expected Completion</label>
               <input type="date" id="moExpectedDate" class="form-control">
             </div>
+            <div class="col-md-4">
+              <label class="form-label fw-bold">Process</label>
+              <select id="moOrderType" class="form-select">
+                <option value="M" selected>Milling</option>
+                <option value="D">Drying</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-bold">Batch / Lot No.</label>
+              <input type="text" id="moBatchNo" class="form-control" placeholder="Defaults to MO number">
+            </div>
+            <div class="col-md-4">
+              <label class="form-label fw-bold">Moisture % (intake)</label>
+              <input type="number" id="moMoisture" class="form-control" min="0" max="100" step="0.1" placeholder="e.g. 14.0">
+            </div>
             <div class="col-md-8">
               <label class="form-label fw-bold">Remarks</label>
               <input type="text" id="moRemarks" class="form-control" placeholder="Optional notes">
@@ -333,6 +394,7 @@ async function loadNewMillingOrderForm() {
       <div class="alert alert-info border-0 small">
         <i class="bi bi-info-circle me-2"></i>
         Output products (milled rice, bran, ipa, etc.) are recorded when you <strong>complete</strong> the milling order after milling is done.
+        If a <strong>yield template</strong> exists for the input item (Production → BOM, type Milling), expected output lines are created automatically.
       </div>
 
       <div class="d-flex gap-2 justify-content-end">
@@ -375,6 +437,9 @@ window.submitMillingOrder = async function() {
     input_item_id:   inputItemID,
     input_qty:       inputQty,
     input_uom_entry: inputUomEntry,
+    order_type:      document.getElementById('moOrderType')?.value || 'M',
+    batch_no:        document.getElementById('moBatchNo')?.value.trim() || '',
+    moisture_pct:    parseFloat(document.getElementById('moMoisture')?.value) || 0,
   };
 
   const mo = await api.CreateMillingOrder(req);
@@ -399,21 +464,32 @@ window.openCompleteModal = function(id) {
   _moInputQtyForRecovery = _moInputQty || 0;
   document.getElementById('completeOutputLines').innerHTML = '';
   document.getElementById('moCompletionNote').value = '';
+  const rej = document.getElementById('moRejectedQty'); if (rej) rej.value = '';
+  const om  = document.getElementById('moOutMoisture'); if (om) om.value = '';
   moUpdateRecovery();
-  // Add 3 default lines
-  moCompleteAddLine();
-  moCompleteAddLine();
-  moCompleteAddLine();
+  // Prefill from the yield template (expected output lines created with the order);
+  // fall back to 3 blank lines when no template exists.
+  const templateLines = (_moLines || []).filter(l => l.expected_qty > 0);
+  if (templateLines.length > 0) {
+    templateLines.forEach(l => moCompleteAddLine(l));
+  } else {
+    moCompleteAddLine();
+    moCompleteAddLine();
+    moCompleteAddLine();
+  }
   new bootstrap.Modal(document.getElementById('completeModal')).show();
 };
 
-window.moCompleteAddLine = function() {
+window.moCompleteAddLine = function(prefill) {
   const idx = _moCompleteLineIdx++;
   const itemOptions = _moItemList.map(i =>
-    `<option value="${i.id}" data-unit="${i.invntry_uom}" data-uom="${i.i_uom_entry || 0}">${i.item_code} — ${i.item_name}</option>`
+    `<option value="${i.id}" data-unit="${i.invntry_uom}" data-uom="${i.i_uom_entry || 0}"
+      ${prefill && prefill.output_item_id === i.id ? 'selected' : ''}>${i.item_code} — ${i.item_name}</option>`
   ).join('');
   const tr = document.createElement('tr');
   tr.dataset.idx = idx;
+  tr.dataset.expected = prefill ? (prefill.expected_qty || 0) : 0;
+  tr.dataset.outputType = prefill ? (prefill.output_type || '') : '';
   tr.innerHTML = `
     <td>
       <select class="form-select form-select-sm mo-cmp-item" onchange="moCompleteOnItemChange(this, ${idx})">
@@ -421,12 +497,14 @@ window.moCompleteAddLine = function() {
         ${itemOptions}
       </select>
     </td>
+    <td class="text-end text-muted small mo-cmp-expected">${prefill && prefill.expected_qty > 0 ? formatNumber(prefill.expected_qty, 3) : '—'}</td>
     <td>
       <input type="number" class="form-control form-control-sm mo-cmp-qty text-center"
              min="0" step="0.001" placeholder="0.000" oninput="moUpdateRecovery()">
     </td>
     <td>
-      <input type="text" class="form-control form-control-sm mo-cmp-unit text-center" readonly placeholder="—">
+      <input type="text" class="form-control form-control-sm mo-cmp-unit text-center" readonly placeholder="—"
+             value="${prefill ? (prefill.unit || '') : ''}">
     </td>
     <td>
       <button class="btn btn-sm btn-outline-danger py-0" onclick="this.closest('tr').remove();moUpdateRecovery();">
@@ -445,14 +523,19 @@ window.moCompleteOnItemChange = function(sel, idx) {
 
 window.moUpdateRecovery = function() {
   const inputQty = _moInputQtyForRecovery;
-  // MRR (Milling Recovery Rate) = milled white rice output only ÷ palay input × 100
-  // Rice hull (ipa), bran, and polishings are excluded per PSA/IRRI standard.
+  // MRR (Milling Recovery Rate) = milled rice output (head rice + brokens) ÷ palay
+  // input × 100. Rice hull (ipa), bran, and polishings are excluded per PSA/IRRI
+  // standard. Lines classified H/B by the yield template count directly; otherwise
+  // the item's category decides.
   let milledRiceQty = 0;
   document.querySelectorAll('#completeOutputLines tr').forEach(row => {
     const sel = row.querySelector('.mo-cmp-item');
     const qty = parseFloat(row.querySelector('.mo-cmp-qty')?.value) || 0;
     const itemId = parseInt(sel?.value) || 0;
     if (!itemId || qty <= 0) return;
+    const outType = row.dataset.outputType || '';
+    if (outType === 'H' || outType === 'B') { milledRiceQty += qty; return; }
+    if (outType === 'Y') return;
     const item = _moItemList.find(i => i.id === itemId);
     if (item && item.category === 'Milled Rice') milledRiceQty += qty;
   });
@@ -469,17 +552,46 @@ window.submitCompleteMillingOrder = async function(id) {
     const qty     = parseFloat(row.querySelector('.mo-cmp-qty')?.value) || 0;
     const uomEntry = parseInt(row.querySelector('.mo-cmp-item')?.selectedOptions[0]?.dataset?.uom) || 0;
     if (itemID > 0 && qty > 0) {
-      lines.push({ output_item_id: itemID, actual_qty: qty, uom_entry: uomEntry });
+      lines.push({
+        output_item_id: itemID,
+        actual_qty:     qty,
+        uom_entry:      uomEntry,
+        expected_qty:   parseFloat(row.dataset.expected) || 0,
+        output_type:    row.dataset.outputType || '',
+      });
     }
   });
 
   if (lines.length === 0) { toast('Add at least one output item with a quantity.', 'warning'); return; }
 
-  const note = document.getElementById('moCompletionNote').value.trim();
+  const req = {
+    lines,
+    completion_note:  document.getElementById('moCompletionNote').value.trim(),
+    rejected_qty:     parseFloat(document.getElementById('moRejectedQty')?.value) || 0,
+    out_moisture_pct: parseFloat(document.getElementById('moOutMoisture')?.value) || 0,
+  };
   bootstrap.Modal.getInstance(document.getElementById('completeModal'))?.hide();
 
-  const ok = await api.CompleteMillingOrder(id, { lines, completion_note: note });
-  if (ok) navigate(`#/production/milling-orders/${id}`);
+  // Call the binding directly (not via the api proxy) so an out-of-band recovery
+  // rejection can be caught and re-submitted with an explicit operator override.
+  let resp = await window.go.app.App.CompleteMillingOrder(id, req);
+  if (!resp.ok && (resp.message || '').includes('outside the acceptable band')) {
+    if (confirm(`${resp.message}\n\nPost anyway?`)) {
+      resp = await window.go.app.App.CompleteMillingOrder(id, { ...req, allow_out_of_band: true });
+    } else {
+      return;
+    }
+  }
+  if (!resp.ok) { toast(resp.message || 'Failed to complete milling order', 'danger', 8000); return; }
+
+  const result = resp.data || {};
+  (result.warnings || []).forEach(w => toast(w, 'warning', 8000));
+  const kpis = [];
+  if (result.milled_recovery) kpis.push(`Recovery ${result.milled_recovery.toFixed(1)}%`);
+  if (result.head_rice_pct)   kpis.push(`Head rice ${result.head_rice_pct.toFixed(1)}%`);
+  if (result.broken_pct)      kpis.push(`Brokens ${result.broken_pct.toFixed(1)}%`);
+  toast(`Milling order completed${kpis.length ? ' — ' + kpis.join(', ') : ''}`, 'success', 6000);
+  navigate(`#/production/milling-orders/${id}`);
 };
 
 // ── Cancel ─────────────────────────────────────────────────────────────────────

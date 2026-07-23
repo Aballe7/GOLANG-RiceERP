@@ -14,6 +14,7 @@ import (
 	"ricemill/app/models"
 	auditsvc "ricemill/app/services/audit"
 	backupsvc "ricemill/app/services/backup"
+	importersvc "ricemill/app/services/importer"
 	invsvc "ricemill/app/services/inventory"
 	productionsvc "ricemill/app/services/production"
 	purchasingsvc "ricemill/app/services/purchasing"
@@ -80,6 +81,13 @@ func (a *App) DomReady(ctx context.Context) {
 
 	if err := db.SeedDefaults(); err != nil {
 		runtime.EventsEmit(ctx, "startup:error", "Seed defaults failed: "+err.Error())
+		return
+	}
+
+	// One-time reconstruction of stock-ledger rows for documents posted before
+	// the OIVL wiring existed (sentinel-guarded, no-op afterwards).
+	if err := invsvc.BackfillOIVL(); err != nil {
+		runtime.EventsEmit(ctx, "startup:error", "Stock ledger backfill failed: "+err.Error())
 		return
 	}
 
@@ -494,6 +502,79 @@ func (a *App) ExportPnLExcel(startDate, endDate string) handlers.Response {
 	return handlers.OkResponse("P&L exported to "+destPath, nil)
 }
 
+// ─────────────────────── Master Data Import ─────────────────────────────────
+
+// checkImportAccess gates all master-data import operations behind Admin access.
+func checkImportAccess() (handlers.Response, bool) {
+	if !middleware.Store.IsLoggedIn() {
+		return handlers.Response{OK: false, Message: "Unauthorized. Please log in."}, false
+	}
+	if !middleware.Store.CanAccess("Admin") {
+		return handlers.Response{OK: false, Message: "Access denied: master data import requires Admin access."}, false
+	}
+	return handlers.Response{}, true
+}
+
+// DownloadImportTemplate saves a fill-in .xlsx template for the given data type
+// (items | customers | suppliers) to a user-chosen location.
+func (a *App) DownloadImportTemplate(dataType string) handlers.Response {
+	if r, ok := checkImportAccess(); !ok {
+		return r
+	}
+	destPath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save Import Template — " + importersvc.DataTypeLabel(dataType),
+		DefaultFilename: fmt.Sprintf("import_template_%s.xlsx", dataType),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Excel Files (*.xlsx)", Pattern: "*.xlsx"},
+		},
+	})
+	if err != nil || destPath == "" {
+		return handlers.Response{OK: false, Message: "Template download cancelled"}
+	}
+	if err := importersvc.WriteTemplate(dataType, destPath); err != nil {
+		return handlers.Response{OK: false, Message: "Template generation failed: " + err.Error()}
+	}
+	return handlers.OkResponse("Template saved to "+destPath, nil)
+}
+
+// PreviewMasterDataImport opens a file picker, parses the chosen workbook, and
+// returns a validated dry-run preview. Nothing is written to the database.
+func (a *App) PreviewMasterDataImport(dataType string) handlers.Response {
+	if r, ok := checkImportAccess(); !ok {
+		return r
+	}
+	filePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select Excel File — " + importersvc.DataTypeLabel(dataType),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Excel Files (*.xlsx)", Pattern: "*.xlsx"},
+		},
+	})
+	if err != nil || filePath == "" {
+		return handlers.Response{OK: false, Message: "Import cancelled"}
+	}
+	preview, err := importersvc.PreviewImport(dataType, filePath)
+	if err != nil {
+		return handlers.Response{OK: false, Message: err.Error()}
+	}
+	return handlers.OkResponse("", preview)
+}
+
+// CommitMasterDataImport applies a previously previewed workbook.
+func (a *App) CommitMasterDataImport(dataType, filePath string) handlers.Response {
+	if r, ok := checkImportAccess(); !ok {
+		return r
+	}
+	userID := middleware.Store.UserID()
+	result, err := importersvc.CommitImport(dataType, filePath, userID)
+	if err != nil {
+		return handlers.Response{OK: false, Message: "Import failed: " + err.Error()}
+	}
+	summary := fmt.Sprintf("%s import: %d created, %d updated, %d skipped",
+		importersvc.DataTypeLabel(dataType), result.Created, result.Updated, result.Skipped)
+	auditsvc.Log("IMPORT", "MasterData", dataType, filePath, summary, nil)
+	return handlers.OkResponse(summary, result)
+}
+
 // ─────────────────────── Backup ──────────────────────────────────────────────
 
 // CreateBackup runs mysqldump to the managed backups directory (~\EggLayerERP\backups).
@@ -629,6 +710,7 @@ func (a *App) CompleteMillingOrder(id uint, req productionsvc.CompleteMillingReq
 	return handlers.CompleteMillingOrder(id, req)
 }
 func (a *App) CancelMillingOrder(id uint) handlers.Response { return handlers.CancelMillingOrder(id) }
+func (a *App) GetMillingYieldReport() handlers.Response     { return handlers.GetMillingYieldReport() }
 
 // BOM
 func (a *App) ListBOMs() handlers.Response                         { return handlers.ListBOMs() }

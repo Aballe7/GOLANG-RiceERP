@@ -1,20 +1,20 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "RiceMill",
-  "outputfilename": "RiceMill",
+  "name": "Fitly",
+  "outputfilename": "Fitly",
   "frontend:install": "cmd /c echo no-install",
   "frontend:build": "cmd /c echo no-build",
   "frontend:dev:watcher": "",
   "frontend:dev:serverUrl": "",
   "author": {
-    "name": "RiceMill",
+    "name": "Fitly",
     "email": ""
   },
   "info": {
-    "companyName": "RiceMill",
-    "productName": "RiceMill ERP",
+    "companyName": "Fitly",
+    "productName": "Fitly",
     "productVersion": "1.0.0",
-    "copyright": "Copyright © 2025 RiceMill",
+    "copyright": "Copyright © 2025 Fitly",
     "comments": "Business ERP System"
   }
 }

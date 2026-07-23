@@ -65,17 +65,47 @@ async function loadGLAccounts(tabBar) {
   const accounts = await api.GetGLAccounts();
   _glAccounts = accounts || [];
 
+  const SECTION_LABEL = {
+    ASSET: 'Asset', LIABILITY: 'Liability', EQUITY: 'Equity',
+    REVENUE: 'Revenue', EXPENSE: 'Expense',
+  };
+  const SECTION_BADGE = {
+    ASSET:     'bg-primary-subtle text-primary-emphasis',
+    LIABILITY: 'bg-warning-subtle text-warning-emphasis',
+    EQUITY:    'bg-info-subtle text-info-emphasis',
+    REVENUE:   'bg-success-subtle text-success-emphasis',
+    EXPENSE:   'bg-danger-subtle text-danger-emphasis',
+  };
+  const sectionCell = s => s
+    ? `<span class="badge rounded-pill ${SECTION_BADGE[s] || 'bg-secondary-subtle text-secondary-emphasis'}">${SECTION_LABEL[s] || s}</span>`
+    : '<span class="text-muted">—</span>';
+
+  // Treat an account as a root when it has no parent, or its parent is missing
+  // from the list (inactive/deleted) — so orphans are never silently dropped.
+  const idSet = new Set(_glAccounts.map(a => a.id));
+  const effParent = a => {
+    const p = a.parent_id ?? null;
+    return (p !== null && idSet.has(p)) ? p : null;
+  };
+
   function buildTree(parentId, depth) {
     return _glAccounts
-      .filter(a => (a.parent_id ?? null) === parentId)
+      .filter(a => effParent(a) === parentId)
       .map(a => {
-        const indent = '&nbsp;'.repeat(depth * 4);
+        const isHeader = (a.account_type || '').toUpperCase() === 'HEADER';
         const children = buildTree(a.id, depth + 1);
+        const pad = depth * 22 + 12;
+        const connector = depth > 0
+          ? '<span class="text-muted me-1 font-monospace">└</span>' : '';
+        const typeBadge = isHeader
+          ? '<span class="badge bg-secondary-subtle text-secondary-emphasis">Header</span>'
+          : '<span class="badge bg-primary-subtle text-primary-emphasis">Posting</span>';
         return `
-          <tr>
-            <td>${indent}<strong class="${depth === 0 ? '' : 'fw-normal'}">${a.code}</strong></td>
-            <td>${indent}${a.name}</td>
-            <td>${a.account_type || '—'}</td>
+          <tr class="${isHeader ? 'table-light' : ''}">
+            <td style="padding-left:${pad}px">${connector}<span class="font-monospace ${isHeader ? 'fw-bold' : ''}">${a.code}</span></td>
+            <td class="${isHeader ? 'fw-semibold' : ''}">${a.name}</td>
+            <td>${sectionCell(a.section)}</td>
+            <td>${typeBadge}</td>
             <td>${a.normal_balance || '—'}</td>
             <td class="text-end">
               <button class="btn btn-sm btn-outline-secondary" onclick="openAccountModal(${a.id})">
@@ -89,7 +119,7 @@ async function loadGLAccounts(tabBar) {
   }
 
   const treeRows = _glAccounts.length === 0
-    ? `<tr><td colspan="5" class="text-center text-muted py-4">No accounts found.</td></tr>`
+    ? `<tr><td colspan="6" class="text-center text-muted py-4">No accounts found.</td></tr>`
     : buildTree(null, 0);
 
   showView(wrapAccounting(tabBar, `
@@ -102,7 +132,7 @@ async function loadGLAccounts(tabBar) {
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle mb-0">
           <thead class="table-light">
-            <tr><th>Code</th><th>Name</th><th>Type</th><th>Normal Balance</th><th></th></tr>
+            <tr><th>Code</th><th>Name</th><th>Section</th><th>Type</th><th>Normal Balance</th><th></th></tr>
           </thead>
           <tbody>${treeRows}</tbody>
         </table>
@@ -129,26 +159,40 @@ async function loadGLAccounts(tabBar) {
                 <input type="text" class="form-control" id="accountName" required>
               </div>
               <div class="col-md-6">
+                <label class="form-label">Section</label>
+                <select class="form-select" id="accountSection">
+                  <option value="">Select…</option>
+                  <option value="ASSET">Asset</option>
+                  <option value="LIABILITY">Liability</option>
+                  <option value="EQUITY">Equity</option>
+                  <option value="REVENUE">Revenue</option>
+                  <option value="EXPENSE">Expense</option>
+                </select>
+              </div>
+              <div class="col-md-6">
                 <label class="form-label">Account Type</label>
                 <select class="form-select" id="accountType">
-                  <option value="">Select…</option>
-                  <option>Asset</option><option>Liability</option><option>Equity</option>
-                  <option>Revenue</option><option>Expense</option>
+                  <option value="POSTING">Posting (transactions post here)</option>
+                  <option value="HEADER">Header (grouping only)</option>
                 </select>
               </div>
               <div class="col-md-6">
                 <label class="form-label">Normal Balance</label>
                 <select class="form-select" id="accountNormalBalance">
                   <option value="">Select…</option>
-                  <option>Debit</option><option>Credit</option>
+                  <option value="DEBIT">Debit</option>
+                  <option value="CREDIT">Credit</option>
                 </select>
               </div>
-              <div class="col-12">
+              <div class="col-md-6">
                 <label class="form-label">Parent Account</label>
                 <select class="form-select" id="accountParent">
-                  <option value="">— None (top level) —</option>
-                  ${_glAccounts.map(a => `<option value="${a.id}">${a.code} — ${a.name}</option>`).join('')}
+                  <option value="">— Auto (derive from code) —</option>
+                  ${_glAccounts
+                    .filter(a => (a.account_type || '').toUpperCase() === 'HEADER')
+                    .map(a => `<option value="${a.id}">${a.code} — ${a.name}</option>`).join('')}
                 </select>
+                <div class="form-text">Leave blank to nest automatically under the matching header code.</div>
               </div>
             </div>
           </div>
@@ -171,13 +215,15 @@ function openAccountModal(id) {
     if (a) {
       document.getElementById('accountCode').value = a.code || '';
       document.getElementById('accountName').value = a.name || '';
-      document.getElementById('accountType').value = a.account_type || '';
-      document.getElementById('accountNormalBalance').value = a.normal_balance || '';
+      document.getElementById('accountSection').value = (a.section || '').toUpperCase();
+      document.getElementById('accountType').value = (a.account_type || 'POSTING').toUpperCase();
+      document.getElementById('accountNormalBalance').value = (a.normal_balance || '').toUpperCase();
       document.getElementById('accountParent').value = a.parent_id ?? '';
     }
   } else {
     ['accountCode','accountName'].forEach(id => document.getElementById(id).value = '');
-    document.getElementById('accountType').value = '';
+    document.getElementById('accountSection').value = '';
+    document.getElementById('accountType').value = 'POSTING';
     document.getElementById('accountNormalBalance').value = '';
     document.getElementById('accountParent').value = '';
   }
@@ -190,10 +236,13 @@ async function submitAccountForm() {
   const payload = {
     code:           document.getElementById('accountCode').value.trim(),
     name:           document.getElementById('accountName').value.trim(),
+    section:        document.getElementById('accountSection').value,
     account_type:   document.getElementById('accountType').value,
     normal_balance: document.getElementById('accountNormalBalance').value,
-    parent_id:      parentVal ? parseInt(parentVal, 10) : null,
   };
+  // Blank parent: on create the backend auto-derives from the code; on update we
+  // omit it so an existing link is preserved rather than cleared.
+  if (parentVal) payload.parent_id = parseInt(parentVal, 10);
   if (!payload.code || !payload.name) {
     toast('Code and name are required.', 'warning'); return;
   }

@@ -814,6 +814,7 @@ export namespace inventory {
 	    warehouse_code: string;
 	    account_code: string;
 	    project: string;
+	    batch_no: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GRLineInput(source);
@@ -828,6 +829,7 @@ export namespace inventory {
 	        this.warehouse_code = source["warehouse_code"];
 	        this.account_code = source["account_code"];
 	        this.project = source["project"];
+	        this.batch_no = source["batch_no"];
 	    }
 	}
 	export class CreateGoodsReceiptRequest {
@@ -1815,6 +1817,7 @@ export namespace models {
 	    uom_code: string;
 	    uom_entry: number;
 	    price: number;
+	    output_type: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProductTreeLine(source);
@@ -1832,6 +1835,7 @@ export namespace models {
 	        this.uom_code = source["uom_code"];
 	        this.uom_entry = source["uom_entry"];
 	        this.price = source["price"];
+	        this.output_type = source["output_type"];
 	    }
 	}
 	export class ProductTree {
@@ -1960,6 +1964,7 @@ export namespace production {
 	    actual_qty: number;
 	    expected_qty: number;
 	    uom_entry: number;
+	    output_type: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CompleteMillingLineInput(source);
@@ -1971,12 +1976,17 @@ export namespace production {
 	        this.actual_qty = source["actual_qty"];
 	        this.expected_qty = source["expected_qty"];
 	        this.uom_entry = source["uom_entry"];
+	        this.output_type = source["output_type"];
 	    }
 	}
 	export class CompleteMillingRequest {
 	    lines: CompleteMillingLineInput[];
 	    completion_note: string;
 	    completion_date: string;
+	    rejected_qty: number;
+	    out_moisture_pct: number;
+	    conversion_cost: number;
+	    allow_out_of_band: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new CompleteMillingRequest(source);
@@ -1987,6 +1997,10 @@ export namespace production {
 	        this.lines = this.convertValues(source["lines"], CompleteMillingLineInput);
 	        this.completion_note = source["completion_note"];
 	        this.completion_date = source["completion_date"];
+	        this.rejected_qty = source["rejected_qty"];
+	        this.out_moisture_pct = source["out_moisture_pct"];
+	        this.conversion_cost = source["conversion_cost"];
+	        this.allow_out_of_band = source["allow_out_of_band"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2015,6 +2029,9 @@ export namespace production {
 	    input_qty: number;
 	    input_uom_entry: number;
 	    warehouse_code: string;
+	    order_type: string;
+	    batch_no: string;
+	    moisture_pct: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CreateMillingOrderRequest(source);
@@ -2029,6 +2046,9 @@ export namespace production {
 	        this.input_qty = source["input_qty"];
 	        this.input_uom_entry = source["input_uom_entry"];
 	        this.warehouse_code = source["warehouse_code"];
+	        this.order_type = source["order_type"];
+	        this.batch_no = source["batch_no"];
+	        this.moisture_pct = source["moisture_pct"];
 	    }
 	}
 	export class CreateWORequest {

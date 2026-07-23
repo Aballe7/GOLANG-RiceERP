@@ -66,6 +66,10 @@ export function CloseWorkOrder(arg1, arg2, arg3) {
   return window['go']['app']['App']['CloseWorkOrder'](arg1, arg2, arg3);
 }
 
+export function CommitMasterDataImport(arg1, arg2) {
+  return window['go']['app']['App']['CommitMasterDataImport'](arg1, arg2);
+}
+
 export function CompleteMillingOrder(arg1, arg2) {
   return window['go']['app']['App']['CompleteMillingOrder'](arg1, arg2);
 }
@@ -246,6 +250,10 @@ export function DownloadBackup(arg1) {
   return window['go']['app']['App']['DownloadBackup'](arg1);
 }
 
+export function DownloadImportTemplate(arg1) {
+  return window['go']['app']['App']['DownloadImportTemplate'](arg1);
+}
+
 export function ExportBalanceSheetExcel(arg1) {
   return window['go']['app']['App']['ExportBalanceSheetExcel'](arg1);
 }
@@ -396,6 +404,10 @@ export function GetJournalEntry(arg1) {
 
 export function GetMillingOrder(arg1) {
   return window['go']['app']['App']['GetMillingOrder'](arg1);
+}
+
+export function GetMillingYieldReport() {
+  return window['go']['app']['App']['GetMillingYieldReport']();
 }
 
 export function GetNextPONumber() {
@@ -620,6 +632,10 @@ export function Logout() {
 
 export function PostManualJournalEntry(arg1) {
   return window['go']['app']['App']['PostManualJournalEntry'](arg1);
+}
+
+export function PreviewMasterDataImport(arg1) {
+  return window['go']['app']['App']['PreviewMasterDataImport'](arg1);
 }
 
 export function RejectSupplier(arg1) {

@@ -1,12 +1,16 @@
 package db
 
 import (
-	"ricemill/app/models"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
+
+	"ricemill/app/models"
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 // AutoMigrateAll creates/updates all tables.
@@ -374,6 +378,76 @@ func RunColumnMigrations() error {
 			}
 		}
 	}
+
+	// ── Relax legacy NOT-NULL columns no longer in the GORM models ──────────
+	// GORM never drops columns, so superseded columns (e.g. oitm.category after
+	// the itms_grp_cod migration) linger in old installs. When such a column is
+	// NOT NULL without a default, every model-based INSERT fails on strict-mode
+	// MySQL with Error 1364 ("Field 'x' doesn't have a default value") because
+	// GORM omits fields it doesn't know. Make those columns nullable.
+	if err := relaxLegacyNotNullColumns(); err != nil {
+		return fmt.Errorf("relax legacy columns: %w", err)
+	}
+
+	return nil
+}
+
+// relaxLegacyNotNullColumns finds columns on model-backed tables that are
+// NOT NULL, have no default, and do not exist in the current GORM model, then
+// alters them to be nullable. Idempotent — once nullable, a column no longer
+// matches the information_schema filter.
+func relaxLegacyNotNullColumns() error {
+	if DB.Dialector.Name() != "mysql" {
+		return nil // information_schema/MODIFY logic below is MySQL-specific
+	}
+
+	targets := []struct {
+		table string
+		model interface{}
+	}{
+		{"oitm", &models.OITM{}},
+		{"oitb", &models.OITB{}},
+		{"customer", &models.Customer{}},
+		{"supplier", &models.Supplier{}},
+	}
+
+	for _, t := range targets {
+		// Model-known column names via GORM's schema parser.
+		s, err := schema.Parse(t.model, &sync.Map{}, schema.NamingStrategy{})
+		if err != nil {
+			return fmt.Errorf("parse model for %s: %w", t.table, err)
+		}
+		known := map[string]bool{}
+		for _, f := range s.Fields {
+			if f.DBName != "" {
+				known[strings.ToLower(f.DBName)] = true
+			}
+		}
+
+		type colInfo struct {
+			ColumnName string
+			ColumnType string
+		}
+		var cols []colInfo
+		if err := DB.Raw(`
+			SELECT column_name AS column_name, column_type AS column_type
+			FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ?
+			  AND is_nullable = 'NO' AND column_default IS NULL
+			  AND extra NOT LIKE '%auto_increment%'`, t.table).Scan(&cols).Error; err != nil {
+			return fmt.Errorf("inspect %s columns: %w", t.table, err)
+		}
+		for _, c := range cols {
+			if known[strings.ToLower(c.ColumnName)] {
+				continue // legitimate model column (item_code, name, …) — leave it
+			}
+			sql := fmt.Sprintf("ALTER TABLE `%s` MODIFY `%s` %s NULL", t.table, c.ColumnName, c.ColumnType)
+			if err := DB.Exec(sql).Error; err != nil {
+				return fmt.Errorf("relax %s.%s: %w", t.table, c.ColumnName, err)
+			}
+			fmt.Printf("[MIGRATE] relaxed legacy column %s.%s (%s) to NULL\n", t.table, c.ColumnName, c.ColumnType)
+		}
+	}
 	return nil
 }
 
@@ -681,6 +755,12 @@ func SeedDefaults() error {
 		"tray_size":    "30",
 		"currency":     "PHP",
 		"currency_sym": "₱",
+		// Milling controls (Part 2 audit): acceptable milled-rice recovery band
+		// (% of paddy input; IRRI reference 68–72%) and the standard conversion
+		// cost absorbed into WIP per kg of paddy milled (0 = disabled).
+		"milling_recovery_min":     "60",
+		"milling_recovery_max":     "75",
+		"milling_conv_cost_per_kg": "0",
 	}
 	for k, v := range defaults {
 		var s models.FarmSettings
@@ -734,6 +814,11 @@ func SeedDefaults() error {
 		return fmt.Errorf("migrateAssetsAccounts: %w", err)
 	}
 
+	// Backfill parent links from the account-code hierarchy (headers → postings)
+	if err := migrateGLAccountParents(); err != nil {
+		return fmt.Errorf("migrateGLAccountParents: %w", err)
+	}
+
 	// Seed account determination rules for all modules
 	if err := seedRiceMillAccountDetermination(); err != nil {
 		return fmt.Errorf("seedRiceMillAccountDetermination: %w", err)
@@ -754,6 +839,52 @@ func SeedDefaults() error {
 		return fmt.Errorf("seedWHTAccountDetermination: %w", err)
 	}
 
+	// Milling Overhead Absorbed account + MILLING_OVERHEAD posting event
+	// (conversion-cost absorption into WIP — Part 2 audit)
+	if err := migrateMillingOverheadAccount(); err != nil {
+		return fmt.Errorf("migrateMillingOverheadAccount: %w", err)
+	}
+
+	return nil
+}
+
+// migrateMillingOverheadAccount adds the "Milling Overhead Absorbed" contra-expense
+// account and maps the PRODUCTION/MILLING_OVERHEAD posting event to it. The
+// completion of a milling order credits this account for the conversion cost
+// (labour, power, machine overhead) absorbed into output inventory, offsetting the
+// actual expenses booked in 5-2000/5-3000/5-4000.
+// Guarded by sentinel "milling_overhead_v1_done".
+func migrateMillingOverheadAccount() error {
+	var sentinel models.FarmSettings
+	if DB.Where("`key` = ?", "milling_overhead_v1_done").First(&sentinel).Error == nil {
+		return nil
+	}
+
+	acct := models.GLAccount{
+		Code: "5-2100", Name: "Milling Overhead Absorbed", Section: "EXPENSE",
+		AccountType: "POSTING", NormalBalance: "CREDIT", IsSystem: true,
+	}
+	var existing models.GLAccount
+	if DB.Where("code = ?", acct.Code).First(&existing).Error != nil {
+		acct.CreatedAt = time.Now()
+		if err := DB.Create(&acct).Error; err != nil {
+			return fmt.Errorf("create %s: %w", acct.Code, err)
+		}
+		existing = acct
+	}
+
+	rule := models.AccountDetermination{
+		Module:       "PRODUCTION",
+		PostingEvent: "MILLING_OVERHEAD",
+		GLAccountID:  existing.ID,
+		IsActive:     true,
+		Notes:        "Milling Complete — conversion cost absorbed into output inventory (Cr)",
+	}
+	DB.Where("module = ? AND posting_event = ? AND item_category IS NULL", rule.Module, rule.PostingEvent).
+		Assign(models.AccountDetermination{GLAccountID: existing.ID, Notes: rule.Notes, IsActive: true}).
+		FirstOrCreate(&rule)
+
+	DB.Save(&models.FarmSettings{Key: "milling_overhead_v1_done", Value: time.Now().Format(time.RFC3339)})
 	return nil
 }
 
@@ -949,6 +1080,74 @@ func migrateAssetsAccounts() error {
 		}
 	}
 	DB.Save(&models.FarmSettings{Key: "coa_assets_v1_done", Value: now.Format(time.RFC3339)})
+	return nil
+}
+
+// DeriveParentCode returns the nearest-ancestor code for a SAP-style "d-dddd"
+// account code by zeroing the least-significant non-zero digit of the 4-digit
+// suffix. Returns "" for top-level codes ("d-0000") or unparseable codes.
+// Callers resolve the returned code against existing accounts.
+//
+//	"1-1110" → "1-1100"   "1-1300" → "1-1000"
+//	"1-1000" → "1-0000"   "1-0000" → ""
+func DeriveParentCode(code string) string {
+	dash := strings.IndexByte(code, '-')
+	if dash < 1 || dash == len(code)-1 {
+		return ""
+	}
+	prefix, suffix := code[:dash], []byte(code[dash+1:])
+	// Zero the right-most non-zero digit.
+	for i := len(suffix) - 1; i >= 0; i-- {
+		if suffix[i] != '0' {
+			suffix[i] = '0'
+			return prefix + "-" + string(suffix)
+		}
+	}
+	return "" // all zeros — already top level
+}
+
+// migrateGLAccountParents backfills GLAccount.ParentID for accounts whose parent
+// link is not yet set, deriving each parent from the account-code hierarchy.
+// It walks DeriveParentCode repeatedly until it finds an existing ancestor, so
+// codes that skip an intermediate level (e.g. "5-2100" whose "5-2000" exists but
+// "5-2100"'s direct parent slot is empty) still link to their nearest ancestor.
+// Guarded by sentinel "coa_parent_backfill_v1_done".
+func migrateGLAccountParents() error {
+	var sentinel models.FarmSettings
+	if DB.Where("`key` = ?", "coa_parent_backfill_v1_done").First(&sentinel).Error == nil {
+		return nil // already backfilled
+	}
+
+	var accounts []models.GLAccount
+	if err := DB.Find(&accounts).Error; err != nil {
+		return fmt.Errorf("migrateGLAccountParents load: %w", err)
+	}
+
+	byCode := make(map[string]models.GLAccount, len(accounts))
+	for _, a := range accounts {
+		byCode[a.Code] = a
+	}
+
+	for _, a := range accounts {
+		if a.ParentID != nil {
+			continue // already linked
+		}
+		// Walk up the code hierarchy to the nearest existing ancestor.
+		for pc := DeriveParentCode(a.Code); pc != ""; pc = DeriveParentCode(pc) {
+			parent, ok := byCode[pc]
+			if !ok || parent.ID == a.ID {
+				continue
+			}
+			pid := parent.ID
+			if err := DB.Model(&models.GLAccount{}).Where("id = ?", a.ID).
+				Update("parent_id", pid).Error; err != nil {
+				return fmt.Errorf("migrateGLAccountParents link %s: %w", a.Code, err)
+			}
+			break
+		}
+	}
+
+	DB.Save(&models.FarmSettings{Key: "coa_parent_backfill_v1_done", Value: time.Now().Format(time.RFC3339)})
 	return nil
 }
 

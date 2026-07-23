@@ -27,6 +27,7 @@ package testutil
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,8 +36,12 @@ import (
 	"gorm.io/gorm"
 
 	"ricemill/app/db"
-	"ricemill/app/models"
 )
+
+// dbSeq disambiguates DSNs opened within the same clock tick — on Windows the
+// nanosecond timestamp alone can repeat across fast successive tests, silently
+// sharing one shared-cache DB between them (unique-constraint failures on seeds).
+var dbSeq atomic.Int64
 
 // SetupDB opens a fresh in-memory SQLite instance, wires it to db.DB, and
 // creates all tables required by the sales O2C and purchasing P2P cycles.
@@ -44,152 +49,11 @@ import (
 // Call at the top of every integration test function.
 func SetupDB(t *testing.T) {
 	t.Helper()
-	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	dsn := fmt.Sprintf("file:test_%d_%d?mode=memory&cache=shared", time.Now().UnixNano(), dbSeq.Add(1))
 	var err error
 	db.DB, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err, "open in-memory SQLite")
 	createAllTables(t)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Low-level seed helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GLAcct inserts a POSTING-type GL account and returns its auto-assigned ID.
-func GLAcct(t *testing.T, code, name, section, normalBal string) uint {
-	t.Helper()
-	a := models.GLAccount{
-		Code:          code,
-		Name:          name,
-		Section:       section,
-		AccountType:   "POSTING",
-		NormalBalance: normalBal,
-		IsActive:      true,
-	}
-	require.NoError(t, db.DB.Create(&a).Error)
-	return a.ID
-}
-
-// AcctDet inserts one account determination rule.
-// Pass nil for category to create a catch-all (item_category IS NULL) rule.
-func AcctDet(t *testing.T, module, event string, category *string, glID uint) {
-	t.Helper()
-	require.NoError(t, db.DB.Create(&models.AccountDetermination{
-		Module:       module,
-		PostingEvent: event,
-		ItemCategory: category,
-		GLAccountID:  glID,
-		IsActive:     true,
-	}).Error)
-}
-
-// SeedOITM inserts a minimal OITM (Item Master) row for tests that exercise
-// inventory and COGS paths (on_hand decrement, COGS JE, etc.).
-// Raw SQL is used so callers don't need to populate every GORM model field.
-// Returns itemCode for convenient chaining in test setup.
-func SeedOITM(t *testing.T, itemCode, itemName string, avgPrice float64) string {
-	t.Helper()
-	require.NoError(t, db.DB.Exec(
-		`INSERT INTO oitm (item_code, item_name, avg_price, on_hand, sell_item, valid_for)
-		 VALUES (?, ?, ?, 1000, 'Y', 'Y')`,
-		itemCode, itemName, avgPrice,
-	).Error)
-	return itemCode
-}
-
-// SeedOITB inserts an item category (OITB) row and returns its auto-assigned
-// itms_grp_cod.  forSales controls whether items in this category may appear
-// on Sales Orders (CreateSalesOrder validates this before saving).
-// Raw SQL is used so callers don't need every GORM model field in the DDL.
-func SeedOITB(t *testing.T, name string, forSales bool) int {
-	t.Helper()
-	forSalesInt := 0
-	if forSales {
-		forSalesInt = 1
-	}
-	require.NoError(t, db.DB.Exec(
-		`INSERT INTO oitb (itms_grp_nam, is_active, for_sales, for_purchasing, for_inventory)
-		 VALUES (?, 1, ?, 1, 1)`,
-		name, forSalesInt,
-	).Error)
-	var id int
-	require.NoError(t, db.DB.Raw(
-		"SELECT itms_grp_cod FROM oitb WHERE itms_grp_nam = ?", name,
-	).Scan(&id).Error)
-	return id
-}
-
-// SeedOITMInGroup inserts a minimal OITM row belonging to the specified
-// itms_grp_cod category.  Use alongside SeedOITB when a test needs to verify
-// category-visibility guards (e.g. for_sales = false blocks SO creation).
-// Returns itemCode for convenient chaining.
-func SeedOITMInGroup(t *testing.T, itemCode, itemName string, avgPrice float64, grpCod int) string {
-	t.Helper()
-	require.NoError(t, db.DB.Exec(
-		`INSERT INTO oitm (item_code, item_name, avg_price, on_hand, itms_grp_cod, sell_item, valid_for)
-		 VALUES (?, ?, ?, 1000, ?, 'Y', 'Y')`,
-		itemCode, itemName, avgPrice, grpCod,
-	).Error)
-	return itemCode
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Module-level seed bundles
-// ─────────────────────────────────────────────────────────────────────────────
-
-// SeedSalesAccounting seeds the minimum GL accounts and determination rules
-// required for the full O2C cycle: SO → DO → AR Invoice → Collection.
-func SeedSalesAccounting(t *testing.T) {
-	t.Helper()
-
-	ar   := GLAcct(t, "1-1200", "Accounts Receivable",    "ASSET",     "DEBIT")
-	inv  := GLAcct(t, "1-1330", "Inventory — Milled Rice", "ASSET",    "DEBIT")
-	rev  := GLAcct(t, "4-1000", "Rice Sales Revenue",      "REVENUE",  "CREDIT")
-	cogs := GLAcct(t, "5-1000", "Cost of Goods Sold",      "EXPENSE",  "DEBIT")
-	cash := GLAcct(t, "1-1100", "Cash on Hand",            "ASSET",    "DEBIT")
-	vat  := GLAcct(t, "2-1200", "Output VAT Payable",      "LIABILITY", "CREDIT")
-
-	AcctDet(t, "SALES",   "AR_RECEIVABLE",      nil, ar)
-	AcctDet(t, "SALES",   "SALES_REVENUE",       nil, rev)
-	AcctDet(t, "SALES",   "COGS",                nil, cogs)
-	AcctDet(t, "SALES",   "INVENTORY_SOLD",      nil, inv)
-	AcctDet(t, "SALES",   "OUTPUT_VAT",          nil, vat)
-	AcctDet(t, "SALES",   "COLLECTION_CLEARING", nil, ar)
-	AcctDet(t, "SALES",   "SALES_DISCOUNT",      nil, rev)
-	AcctDet(t, "BANKING", "CASH_INFLOW",         nil, cash)
-
-	require.NoError(t, db.DB.Create(&models.PaymentMethodAccount{
-		PaymentMethod: "Cash",
-		Direction:     "INFLOW",
-		GLAccountID:   cash,
-		IsActive:      true,
-	}).Error)
-}
-
-// SeedPurchasingAccounting seeds the minimum accounting tables for a P2P cycle.
-// It is a drop-in replacement for the raw seedAccounts() helper in
-// purchasing/service_test.go; new purchasing tests should prefer this.
-func SeedPurchasingAccounting(t *testing.T) {
-	t.Helper()
-
-	grni   := GLAcct(t, "1-1400", "Goods Received Not Invoiced", "ASSET",     "DEBIT")
-	invRec := GLAcct(t, "1-1310", "Inventory — Palay",           "ASSET",     "DEBIT")
-	ap     := GLAcct(t, "2-1100", "Accounts Payable",            "LIABILITY", "CREDIT")
-	apClr  := GLAcct(t, "2-1101", "AP Clearing",                 "LIABILITY", "CREDIT")
-	cash   := GLAcct(t, "1-1100", "Cash on Hand",                "ASSET",     "DEBIT")
-
-	AcctDet(t, "PURCHASING", "GRNI",               nil, grni)
-	AcctDet(t, "PURCHASING", "INVENTORY_RECEIVED", nil, invRec)
-	AcctDet(t, "PURCHASING", "AP_PAYABLE",         nil, ap)
-	AcctDet(t, "PURCHASING", "AP_CLEARING",        nil, apClr)
-	AcctDet(t, "BANKING",    "CASH_OUTFLOW",       nil, cash)
-
-	require.NoError(t, db.DB.Create(&models.PaymentMethodAccount{
-		PaymentMethod: "Cash",
-		Direction:     "OUTFLOW",
-		GLAccountID:   cash,
-		IsActive:      true,
-	}).Error)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,6 +293,7 @@ func allTablesDDL() []string {
 			itms_grp_cod integer primary key autoincrement,
 			itms_grp_nam varchar(100) not null unique,
 			description  varchar(255) default '',
+			costing_meth char(1)      default 'A',
 			is_active    tinyint(1)   default 1,
 			for_sales    tinyint(1)   default 1,
 			for_purchasing tinyint(1) default 1,
@@ -439,19 +304,268 @@ func allTablesDDL() []string {
 			id           integer primary key autoincrement,
 			item_code    varchar(50)  unique not null,
 			item_name    varchar(150) not null default '',
+			frgn_name    varchar(150) default '',
 			itms_grp_cod integer      not null default 0,
+			code_bars    varchar(50)  default '',
+			invnt_item   char(1)      default 'Y',
+			sell_item    char(1)      default 'Y',
+			prchse_item  char(1)      default 'Y',
+			mak_item     char(1)      default 'N',
 			invntry_uom  varchar(20)  not null default 'unit',
+			purchase_unit varchar(20) default '',
+			sales_unit   varchar(20)  default '',
 			i_uom_entry  integer      not null default 0,
+			s_uom_entry  integer      not null default 0,
+			p_uom_entry  integer      not null default 0,
 			ugp_entry    integer      not null default 0,
+			num_in_buy   numeric      default 1,
+			num_in_sale  numeric      default 1,
 			on_hand      numeric      default 0,
 			is_commited  numeric      default 0,
+			on_order     numeric      default 0,
+			min_level    numeric      default 0,
+			max_level    numeric      default 0,
+			lead_time    integer      default 0,
 			avg_price    numeric      default 0,
+			lst_evl_pric numeric      default 0,
+			last_pur_prc numeric      default 0,
+			eval_system  char(1)      default 'A',
+			pricing_cod  varchar(20)  default '',
 			dflt_wh      varchar(10)  default '',
-			sell_item    char(1)      default 'Y',
-			valid_for    char(1)      default 'Y'
+			card_code    varchar(15)  default '',
+			supp_cat_num varchar(20)  default '',
+			vat_gourp_sa varchar(10)  default '',
+			wt_liable    char(1)      default 'N',
+			man_btch_num char(1)      default 'N',
+			man_ser_num  char(1)      default 'N',
+			valid_for    char(1)      default 'Y',
+			description  text,
+			create_date  date,
+			update_date  date
 		)`,
 
-		// ── Purchasing (for future purchasing tests using testutil) ───────────
+		// ── Inventory movement + ledger + per-warehouse stock ─────────────────
+		`CREATE TABLE IF NOT EXISTS oign (
+			id integer primary key autoincrement,
+			gr_number varchar(30) unique not null,
+			posting_date date not null,
+			doc_due_date date,
+			status varchar(20) default 'Open',
+			remarks text,
+			doc_total numeric default 0,
+			created_by_id integer,
+			updated_by_id integer,
+			created_at datetime default CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS ign1 (
+			id integer primary key autoincrement,
+			goods_receipt_id integer not null,
+			line_num integer default 0,
+			item_id integer not null,
+			item_code varchar(50),
+			description varchar(200),
+			quantity numeric not null,
+			unit varchar(20),
+			uom_entry integer not null default 0,
+			price numeric default 0,
+			line_total numeric default 0,
+			warehouse_code varchar(20),
+			account_code varchar(20),
+			project varchar(50),
+			batch_no varchar(30) default ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS oige (
+			id integer primary key autoincrement,
+			gi_number varchar(30) unique not null,
+			posting_date date not null,
+			doc_due_date date,
+			status varchar(20) default 'Open',
+			remarks text,
+			doc_total numeric default 0,
+			created_by_id integer,
+			updated_by_id integer,
+			created_at datetime default CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS ige1 (
+			id integer primary key autoincrement,
+			goods_issue_id integer not null,
+			line_num integer default 0,
+			item_id integer not null,
+			item_code varchar(50),
+			description varchar(200),
+			quantity numeric not null,
+			unit varchar(20),
+			uom_entry integer not null default 0,
+			price numeric default 0,
+			line_total numeric default 0,
+			warehouse_code varchar(20),
+			account_code varchar(20),
+			project varchar(50)
+		)`,
+		`CREATE TABLE IF NOT EXISTS oitw (
+			item_code varchar(50) not null,
+			whs_code varchar(10) not null,
+			on_hand numeric default 0,
+			is_commited numeric default 0,
+			on_order numeric default 0,
+			min_stock numeric default 0,
+			max_stock numeric default 0,
+			avg_price numeric default 0,
+			dflt_bin varchar(20),
+			locked char(1) default 'N',
+			primary key (item_code, whs_code)
+		)`,
+		`CREATE TABLE IF NOT EXISTS oivl (
+			doc_entry integer primary key autoincrement,
+			item_code varchar(50) not null,
+			item_name varchar(150),
+			warehouse varchar(10),
+			doc_date date,
+			trans_type varchar(20),
+			doc_num integer default 0,
+			in_qty numeric default 0,
+			out_qty numeric default 0,
+			price numeric default 0,
+			value numeric default 0,
+			batch_no varchar(30) default '',
+			created_by_id integer default 0,
+			created_at datetime default CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS itm1 (
+			item_code varchar(50) not null,
+			price_list integer not null,
+			price numeric not null default 0,
+			currency varchar(3) default 'PHP',
+			price_dec integer default 2,
+			primary key (item_code, price_list)
+		)`,
+
+		// ── UoM master / group / per-item mapping + warehouses + lookups ──────
+		`CREATE TABLE IF NOT EXISTS ouom (
+			uom_entry integer primary key autoincrement,
+			uom_code varchar(20) not null unique,
+			uom_name varchar(100) not null default '',
+			length numeric default 0, l_type integer default 0,
+			width numeric default 0, w_type integer default 0,
+			height numeric default 0, h_type integer default 0,
+			volume numeric default 0, v_type integer default 0,
+			weight numeric default 0, wgt_type integer default 0,
+			user_sign integer default 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS ougp (
+			ugp_entry integer primary key autoincrement,
+			ugp_code varchar(20) not null unique,
+			ugp_name varchar(100) not null default '',
+			base_uom integer default 0,
+			user_sign integer default 0,
+			user_sign2 integer default 0,
+			update_date datetime,
+			create_date datetime default CURRENT_TIMESTAMP,
+			data_source char(1) default 'M'
+		)`,
+		`CREATE TABLE IF NOT EXISTS itm12 (
+			item_code varchar(50) not null,
+			uom_entry integer not null,
+			uom_type char(1) default '',
+			bar_code varchar(50) default '',
+			primary key (item_code, uom_entry)
+		)`,
+		`CREATE TABLE IF NOT EXISTS owhs (
+			whs_code varchar(10) primary key,
+			whs_name varchar(100) not null default '',
+			location varchar(200) default '',
+			street varchar(200) default '',
+			zip_code varchar(20) default '',
+			city varchar(100) default '',
+			state varchar(100) default '',
+			phone varchar(50) default '',
+			inactive char(1) default 'N'
+		)`,
+		`CREATE TABLE IF NOT EXISTS purchasing_lookup (
+			id integer primary key autoincrement,
+			category varchar(50) not null,
+			value varchar(100) not null,
+			sort_order integer default 0,
+			is_active tinyint(1) default 1
+		)`,
+
+		// ── Production: BOM (oitt/itt1) + Work/Milling orders (owor/wor1) ──────
+		`CREATE TABLE IF NOT EXISTS oitt (
+			code varchar(50) primary key,
+			tree_type char(1) default 'P',
+			warehouse varchar(10),
+			quantity numeric default 1,
+			notes text,
+			updated_at datetime
+		)`,
+		`CREATE TABLE IF NOT EXISTS itt1 (
+			id integer primary key autoincrement,
+			code varchar(50) not null,
+			item_code varchar(50) not null,
+			item_name varchar(200),
+			quantity numeric not null default 1,
+			warehouse varchar(10),
+			issue_method char(1) default 'M',
+			uom_code varchar(20),
+			uom_entry integer default 0,
+			price numeric default 0,
+			output_type char(1) default ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS owor (
+			doc_entry integer primary key autoincrement,
+			doc_num varchar(30) unique not null,
+			order_type char(1) default 'P',
+			item_code varchar(50) not null,
+			item_name varchar(200),
+			planned_qty numeric not null,
+			cmplt_qty numeric default 0,
+			rjct_qty numeric default 0,
+			warehouse varchar(10),
+			start_date date,
+			due_date date,
+			status char(1) default 'P',
+			notes text,
+			batch_no varchar(30) default '',
+			moisture_pct numeric default 0,
+			out_moisture_pct numeric default 0,
+			conv_cost numeric default 0,
+			created_by_id integer,
+			updated_by_id integer,
+			created_at datetime default CURRENT_TIMESTAMP,
+			version integer default 1,
+			goods_issue_id integer,
+			goods_issue_number varchar(30),
+			start_je_id integer,
+			goods_receipt_id integer,
+			goods_receipt_number varchar(30),
+			complete_je_id integer
+		)`,
+		`CREATE TABLE IF NOT EXISTS wor1 (
+			id integer primary key autoincrement,
+			doc_entry integer not null,
+			line_num integer default 0,
+			line_dir char(1) default 'I',
+			item_id integer default 0,
+			item_code varchar(50) not null,
+			item_name varchar(200),
+			item_category varchar(50),
+			planned_qty numeric not null,
+			issued_qty numeric default 0,
+			warehouse varchar(10),
+			issue_method char(1) default 'M',
+			uom_entry integer default 0,
+			uom_code varchar(20),
+			price numeric default 0,
+			output_type char(1) default ''
+		)`,
+
+		// ── Settings (recovery band, conversion-cost standard) ─────────────────
+		`CREATE TABLE IF NOT EXISTS farm_settings (
+			key varchar(50) primary key,
+			value text
+		)`,
+
+		// ── Purchasing ────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS supplier (
 			id integer primary key autoincrement,
 			name varchar(150) not null,
@@ -469,6 +583,9 @@ func allTablesDDL() []string {
 			wht_category varchar(30) default 'NONE',
 			is_vat_registered tinyint(1) default 0,
 			status varchar(20) default 'pending',
+			approved_by varchar(100) default '',
+			approved_by_id integer,
+			approved_at datetime,
 			created_at datetime default CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS purchase_header (

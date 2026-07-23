@@ -101,7 +101,7 @@ async function loadGLAccounts(tabBar) {
           ? '<span class="badge bg-secondary-subtle text-secondary-emphasis">Header</span>'
           : '<span class="badge bg-primary-subtle text-primary-emphasis">Posting</span>';
         return `
-          <tr class="${isHeader ? 'table-light' : ''}">
+          <tr class="${isHeader ? 'table-secondary' : ''}">
             <td style="padding-left:${pad}px">${connector}<span class="font-monospace ${isHeader ? 'fw-bold' : ''}">${a.code}</span></td>
             <td class="${isHeader ? 'fw-semibold' : ''}">${a.name}</td>
             <td>${sectionCell(a.section)}</td>
@@ -186,13 +186,13 @@ async function loadGLAccounts(tabBar) {
               </div>
               <div class="col-md-6">
                 <label class="form-label">Parent Account</label>
-                <select class="form-select" id="accountParent">
-                  <option value="">— Auto (derive from code) —</option>
+                <select class="form-select" id="accountParent" onchange="onAccountParentChange()">
+                  <option value="">— None (top level) —</option>
                   ${_glAccounts
                     .filter(a => (a.account_type || '').toUpperCase() === 'HEADER')
                     .map(a => `<option value="${a.id}">${a.code} — ${a.name}</option>`).join('')}
                 </select>
-                <div class="form-text">Leave blank to nest automatically under the matching header code.</div>
+                <div class="form-text">Choosing a parent auto-fills the next code after its last child.</div>
               </div>
             </div>
           </div>
@@ -228,6 +228,63 @@ function openAccountModal(id) {
     document.getElementById('accountParent').value = '';
   }
   new bootstrap.Modal(document.getElementById('accountModal')).show();
+}
+
+// computeNextChildCode returns the next available SAP-style "d-dddd" code under
+// the given parent account: the last direct child's code + one step, where the
+// step is the digit position one less significant than the parent's least-
+// significant non-zero digit (1-0000→1-1000, 1-1000→1-1100, 1-1100→1-1110…).
+// Returns '' when the parent is unusable or the band is full.
+function computeNextChildCode(parentId) {
+  const parent = _glAccounts.find(a => a.id === parentId);
+  if (!parent) return '';
+  const pm = /^(\d+)-(\d{4})$/.exec(parent.code || '');
+  if (!pm) return '';
+  const prefix = pm[1];
+  const digits = pm[2];
+  const parentVal = parseInt(digits, 10);
+
+  // Position (0=thousands … 3=ones) of the least-significant non-zero digit.
+  let lsnz = -1; // -1 → all zeros (top-level header)
+  for (let i = 3; i >= 0; i--) {
+    if (digits[i] !== '0') { lsnz = i; break; }
+  }
+  const childIndex = lsnz + 1;        // children vary one position less significant
+  if (childIndex > 3) return '';       // parent already at ones level — no room
+  const step = Math.pow(10, 3 - childIndex); // 1000 / 100 / 10 / 1
+
+  // Highest existing direct child (fall back to the parent value when none).
+  let base = parentVal;
+  _glAccounts
+    .filter(a => (a.parent_id ?? null) === parentId)
+    .forEach(a => {
+      const cm = /^(\d+)-(\d{4})$/.exec(a.code || '');
+      if (!cm || cm[1] !== prefix) return;
+      const v = parseInt(cm[2], 10);
+      if (v > base) base = v;
+    });
+
+  const next = base + step;
+  // Guard against carrying into a higher band (which belongs to another parent).
+  if (Math.floor(next / (step * 10)) !== Math.floor(parentVal / (step * 10))) return '';
+  return `${prefix}-${String(next).padStart(4, '0')}`;
+}
+
+// onAccountParentChange auto-fills the account code (and inherits the section)
+// from the selected parent. Fires when the Parent dropdown changes.
+function onAccountParentChange() {
+  const parentVal = document.getElementById('accountParent').value;
+  if (!parentVal) return;
+  const parentId = parseInt(parentVal, 10);
+  const nextCode = computeNextChildCode(parentId);
+  if (nextCode) document.getElementById('accountCode').value = nextCode;
+
+  // A child always sits in the same section as its parent — inherit it when unset.
+  const sectionEl = document.getElementById('accountSection');
+  if (!sectionEl.value) {
+    const parent = _glAccounts.find(a => a.id === parentId);
+    if (parent && parent.section) sectionEl.value = parent.section.toUpperCase();
+  }
 }
 
 async function submitAccountForm() {
